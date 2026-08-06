@@ -108,7 +108,19 @@ def load_class_mapping(path: Path | str) -> ClassMapping:
     raw = json.loads(text, object_pairs_hook=_reject_duplicate_keys)
     if not isinstance(raw, Mapping):
         raise MappingError(f"class mapping root must be a JSON object: {mapping_path}")
-    return validate_class_mapping(raw)
+    stored_digest: str | None = None
+    if "class_to_idx" in raw:
+        nested = raw.get("class_to_idx")
+        if not isinstance(nested, Mapping):
+            raise MappingError("class_to_idx field must be a JSON object.")
+        digest_value = raw.get("digest")
+        if digest_value is not None and not isinstance(digest_value, str):
+            raise MappingError("class mapping digest must be a string when present.")
+        stored_digest = digest_value
+        raw = nested
+    mapping = validate_class_mapping(raw)
+    mapping.require_digest(stored_digest, field="class mapping digest")
+    return mapping
 
 
 def validate_class_mapping(mapping: Mapping[str, Any]) -> ClassMapping:
@@ -188,10 +200,13 @@ def mapping_digest(mapping: Mapping[str, int] | ClassMapping) -> str:
 
 
 def _digest_validated_mapping(mapping: Mapping[str, int]) -> str:
-    canonical_pairs = [
-        {"class_id": class_id, "index": mapping[class_id]} for class_id in sorted(mapping)
-    ]
-    payload = json.dumps(canonical_pairs, ensure_ascii=True, separators=(",", ":")).encode("utf-8")
+    canonical_mapping = {class_id: mapping[class_id] for class_id in sorted(mapping)}
+    payload = json.dumps(
+        {"class_to_idx": canonical_mapping},
+        ensure_ascii=True,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
     return hashlib.sha256(payload).hexdigest()
 
 

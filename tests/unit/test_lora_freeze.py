@@ -82,6 +82,53 @@ def test_lora_default_targets_last_four_qv_blocks() -> None:
     assert set(model.visual.transformer.resblocks[2].attn.target_projections) == {"q", "v"}
 
 
+def test_lora_accepts_configured_negative_block_indices() -> None:
+    """Negative indices from the B2 config resolve relative to the block count."""
+
+    model = TinyClip(blocks=6, embed_dim=8)
+    report = inject_lora_into_visual_transformer(
+        model,
+        LoraInjectionConfig(
+            target_blocks=(-4, -3, -2, -1),
+            target_projections=("q", "v"),
+            rank=2,
+            alpha=2,
+        ),
+    )
+
+    assert report.adapter_count == 4
+    assert not isinstance(model.visual.transformer.resblocks[1].attn, LoRAMultiheadAttention)
+    assert isinstance(model.visual.transformer.resblocks[2].attn, LoRAMultiheadAttention)
+    assert isinstance(model.visual.transformer.resblocks[5].attn, LoRAMultiheadAttention)
+
+
+def test_lora_dropout_changes_training_delta_but_not_eval_output() -> None:
+    """Configured adapter dropout is active only during training."""
+
+    torch.manual_seed(19)
+    adapter = LoRAMultiheadAttention(
+        nn.MultiheadAttention(8, num_heads=2, dropout=0.0),
+        target_projections=("q", "v"),
+        rank=2,
+        alpha=2,
+        dropout=0.5,
+    )
+    with torch.no_grad():
+        for parameter in adapter.lora_b.parameters():
+            parameter.fill_(0.2)
+    query = torch.randn(3, 2, 8)
+
+    adapter.train()
+    first, _ = adapter(query, query, query, need_weights=False)
+    second, _ = adapter(query, query, query, need_weights=False)
+    assert not torch.allclose(first, second)
+
+    adapter.eval()
+    third, _ = adapter(query, query, query, need_weights=False)
+    fourth, _ = adapter(query, query, query, need_weights=False)
+    assert torch.allclose(third, fourth)
+
+
 def test_lora_detects_unauthorized_trainable_backbone_parameter() -> None:
     """Backbone parameters outside LoRA adapters cannot remain trainable."""
 

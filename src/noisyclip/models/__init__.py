@@ -9,8 +9,11 @@ from noisyclip.models.classifier import (
 from noisyclip.models.clip_loader import ClipWeightMetadata, LoadedClipModel, load_clip_vit_b32
 from noisyclip.models.export import (
     ExportedInferenceModel,
+    ExportFormatError,
     export_student_model,
+    load_export_package,
     load_exported_model,
+    load_exported_model_auto,
 )
 from noisyclip.models.lora import LoraInjectionConfig, inject_lora_into_visual_transformer
 from noisyclip.models.outputs import (
@@ -28,6 +31,7 @@ __all__ = [
     "ClassifierHead",
     "ClipWeightMetadata",
     "CosineClassifierHead",
+    "ExportFormatError",
     "ExportedInferenceModel",
     "FrozenTeacher",
     "FrozenTeacherModel",
@@ -42,5 +46,7 @@ __all__ = [
     "export_student_model",
     "inject_lora_into_visual_transformer",
     "load_clip_vit_b32",
+    "load_export_package",
     "load_exported_model",
+    "load_exported_model_auto",
 ]

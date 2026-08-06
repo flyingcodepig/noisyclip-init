@@ -22,6 +22,9 @@ def build_parser() -> argparse.ArgumentParser:
         "--test-manifest", type=Path, default=None, help="Test manifest or filename list."
     )
     parser.add_argument(
+        "--test-root", type=Path, default=None, help="Flat official test image directory."
+    )
+    parser.add_argument(
         "--class-mapping", type=Path, default=None, help="class_to_idx JSON mapping."
     )
     parser.add_argument(
@@ -59,12 +62,21 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     class_mapping = args.class_mapping or _optional_path(config.paths.class_mapping)
     test_manifest = args.test_manifest or _optional_path(config.paths.test_manifest)
+    test_root = args.test_root or _optional_path(config.paths.test_root)
+    if test_manifest is None or test_root is None:
+        print("CONFIG_INVALID: test manifest and test root are required.")
+        return 2
     try:
         report = run_packaged_submission_inference(
             args.model[0],
             args.output_dir,
-            class_mapping_path=class_mapping,
             test_manifest_path=test_manifest,
+            test_root=test_root,
+            class_mapping_path=class_mapping,
+            device=config.trainer.device,
+            batch_size=config.trainer.batch_size,
+            num_workers=config.trainer.num_workers,
+            cache_dir=_optional_path(config.paths.cache_root),
             overwrite=args.overwrite,
         )
     except Exception as exc:

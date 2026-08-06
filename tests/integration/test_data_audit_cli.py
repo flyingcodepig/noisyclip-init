@@ -107,3 +107,23 @@ def test_data_audit_cli_returns_nonzero_on_leakage(tmp_path: Path) -> None:
 
     assert result.returncode == 3
     assert "hash intersections" in result.stderr
+
+
+def test_data_audit_refuses_to_write_artifacts_inside_raw_data(tmp_path: Path) -> None:
+    """A misconfigured run root cannot create derived files under the train root."""
+
+    train_root = tmp_path / "train"
+    test_root = tmp_path / "test"
+    for class_id in ["0001", "0007", "0010"]:
+        _save_image(train_root / class_id / "a.png", (1, int(class_id), 3))
+        _save_image(train_root / class_id / "b.png", (2, int(class_id), 4))
+    _save_image(test_root / "test.png", (3, 4, 5))
+    unsafe_run_root = train_root / "derived-run"
+    config_path = tmp_path / "unsafe-config.yaml"
+    _write_config(config_path, train_root, test_root, unsafe_run_root)
+
+    result = _run_cli(config_path)
+
+    assert result.returncode == 2
+    assert "must not be inside raw train_root" in result.stderr
+    assert not unsafe_run_root.exists()

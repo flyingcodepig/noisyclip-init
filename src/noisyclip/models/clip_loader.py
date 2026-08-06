@@ -184,15 +184,28 @@ def load_clip_vit_b32(
 
     validate_clip_selection(model_name, pretrained)
     selected_backend = backend if backend is not None else OfficialClipBackend()
-    cache_root = str(Path(cache_dir).expanduser()) if cache_dir is not None else None
+    explicit_weight_path = Path(weight_path).expanduser().resolve() if weight_path else None
+    if explicit_weight_path is not None:
+        cache_path = explicit_weight_path.parent
+    elif cache_dir is not None:
+        cache_path = Path(cache_dir).expanduser().resolve()
+    else:
+        cache_path = Path.home() / ".cache" / "clip"
+    resolved_weight_path = explicit_weight_path
+    if isinstance(selected_backend, OfficialClipBackend):
+        resolved_weight_path = resolved_weight_path or cache_path / "ViT-B-32.pt"
+        if not resolved_weight_path.is_file():
+            raise RuntimeError(
+                "Official OpenAI CLIP ViT-B/32 weights are not cached. Download the official "
+                f"file during server bootstrap and place it at {resolved_weight_path}; runtime "
+                "model loading is offline-only."
+            )
+    cache_root = str(cache_path)
     model, preprocess = selected_backend.load(
         model_name,
         device=device,
         jit=jit,
         download_root=cache_root,
-    )
-    resolved_weight_path = (
-        Path(weight_path).expanduser().resolve() if weight_path is not None else None
     )
     sha256 = _sha256_file(resolved_weight_path) if resolved_weight_path is not None else None
     metadata = ClipWeightMetadata(

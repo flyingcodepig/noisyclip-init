@@ -79,7 +79,33 @@ def run_data_audit(config: ProjectConfig) -> DataAuditResult:
     if not test_root.is_dir():
         raise AuditConfigError(f"paths.test_root is not a directory: {test_root}")
 
-    output_dir = run_root / "data"
+    output_dir = (run_root / "data").resolve()
+    class_mapping_path = _path_or_default(
+        config.paths.class_mapping, output_dir / "class_to_idx.json"
+    )
+    train_manifest_path = _path_or_default(
+        config.paths.train_manifest, output_dir / "train_manifest.json"
+    )
+    val_manifest_path = _path_or_default(
+        config.paths.val_manifest, output_dir / "val_manifest.json"
+    )
+    test_manifest_path = _path_or_default(
+        config.paths.test_manifest, output_dir / "test_manifest.json"
+    )
+    summary_path = output_dir / "data_summary.json"
+    leakage_report_path = output_dir / "leakage_report.json"
+    digest_path = output_dir / "manifest_digest.json"
+    for artifact_path in (
+        output_dir,
+        class_mapping_path,
+        train_manifest_path,
+        val_manifest_path,
+        test_manifest_path,
+        summary_path,
+        leakage_report_path,
+        digest_path,
+    ):
+        _assert_derived_path_outside_raw_data(artifact_path, train_root, test_root)
     output_dir.mkdir(parents=True, exist_ok=True)
 
     catalog = scan_class_catalog(
@@ -87,9 +113,7 @@ def run_data_audit(config: ProjectConfig) -> DataAuditResult:
         class_id_regex=config.data.class_id_regex,
         expected_num_classes=config.data.expected_num_classes,
     )
-    class_mapping_path = write_class_mapping(
-        catalog, _path_or_default(config.paths.class_mapping, output_dir / "class_to_idx.json")
-    )
+    class_mapping_path = write_class_mapping(catalog, class_mapping_path)
 
     labeled_records = _audit_labeled_records(train_root, catalog, config)
     test_records = _audit_test_records(test_root, config)
@@ -106,28 +130,17 @@ def run_data_audit(config: ProjectConfig) -> DataAuditResult:
         train_root=train_root,
         test_root=test_root,
     )
-    leakage_report_path = output_dir / "leakage_report.json"
     _write_json(leakage_report_path, _leakage_report_payload(leakage_report))
     assert_no_leakage(leakage_report)
 
-    train_manifest_path = write_manifest(
-        train_records,
-        _path_or_default(config.paths.train_manifest, output_dir / "train_manifest.json"),
-    )
-    val_manifest_path = write_manifest(
-        val_records,
-        _path_or_default(config.paths.val_manifest, output_dir / "val_manifest.json"),
-    )
-    test_manifest_path = write_manifest(
-        test_records,
-        _path_or_default(config.paths.test_manifest, output_dir / "test_manifest.json"),
-    )
+    train_manifest_path = write_manifest(train_records, train_manifest_path)
+    val_manifest_path = write_manifest(val_records, val_manifest_path)
+    test_manifest_path = write_manifest(test_records, test_manifest_path)
 
     combined_digest = data_digest(
         train_records + val_records + test_records,
         dict(catalog.class_to_idx),
     )
-    summary_path = output_dir / "data_summary.json"
     _write_json(
         summary_path,
         {
@@ -145,7 +158,7 @@ def run_data_audit(config: ProjectConfig) -> DataAuditResult:
         },
     )
     _write_json(
-        output_dir / "manifest_digest.json",
+        digest_path,
         {
             "schema_version": 1,
             "class_mapping_digest": catalog.digest,
@@ -251,6 +264,19 @@ def _path_or_default(raw: str | None, default: Path) -> Path:
     if raw.startswith("${"):
         raise AuditConfigError(f"configured output path is unresolved: {raw}")
     return Path(raw).expanduser().resolve()
+
+
+def _assert_derived_path_outside_raw_data(
+    artifact_path: Path,
+    train_root: Path,
+    test_root: Path,
+) -> None:
+    resolved = artifact_path.resolve()
+    for field_name, raw_root in (("train_root", train_root), ("test_root", test_root)):
+        if resolved == raw_root or resolved.is_relative_to(raw_root):
+            raise AuditConfigError(
+                f"Derived artifact path must not be inside raw {field_name}: {resolved}"
+            )
 
 
 def _write_json(path: Path, payload: object) -> None:

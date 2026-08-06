@@ -146,7 +146,9 @@ class LoRAMultiheadAttention(nn.Module):
         if self.merged:
             in_proj_weight = attention.in_proj_weight
         else:
-            in_proj_weight = attention.in_proj_weight + self._delta_weight().to(
+            in_proj_weight = attention.in_proj_weight + self._delta_weight(
+                apply_dropout=self.training
+            ).to(
                 dtype=attention.in_proj_weight.dtype,
                 device=attention.in_proj_weight.device,
             )
@@ -186,7 +188,7 @@ class LoRAMultiheadAttention(nn.Module):
             raise RuntimeError("LoRA adapter has already been merged.")
         with torch.no_grad():
             self.base_attention.in_proj_weight.add_(
-                self._delta_weight().to(
+                self._delta_weight(apply_dropout=False).to(
                     dtype=self.base_attention.in_proj_weight.dtype,
                     device=self.base_attention.in_proj_weight.device,
                 )
@@ -197,7 +199,7 @@ class LoRAMultiheadAttention(nn.Module):
         for parameter in self.lora_b.parameters():
             parameter.requires_grad = False
 
-    def _delta_weight(self) -> Tensor:
+    def _delta_weight(self, *, apply_dropout: bool) -> Tensor:
         embed_dim = int(self.base_attention.embed_dim)
         delta = torch.zeros(
             3 * embed_dim,
@@ -208,7 +210,16 @@ class LoRAMultiheadAttention(nn.Module):
         for projection in self.target_projections:
             start = PROJECTION_TO_OFFSET[projection] * embed_dim
             stop = start + embed_dim
-            update = self.lora_b[projection] @ self.lora_a[projection]
+            adapter_input_scale = torch.ones(
+                embed_dim,
+                dtype=self.lora_a[projection].dtype,
+                device=self.lora_a[projection].device,
+            )
+            if apply_dropout:
+                adapter_input_scale = self.dropout(adapter_input_scale)
+            update = self.lora_b[projection] @ (
+                self.lora_a[projection] * adapter_input_scale.unsqueeze(0)
+            )
             delta[start:stop, :] = update * self.scaling
         return delta
 
@@ -347,12 +358,15 @@ def _resolve_target_blocks(
         return tuple(range(start, num_blocks))
     if not target_blocks:
         raise ValueError("target_blocks cannot be empty when LoRA is enabled.")
-    if len(set(target_blocks)) != len(target_blocks):
-        raise ValueError(f"target_blocks must be unique, got {target_blocks}.")
-    for index in target_blocks:
+    normalized = tuple(index + num_blocks if index < 0 else index for index in target_blocks)
+    if len(set(normalized)) != len(normalized):
+        raise ValueError(
+            f"target_blocks must resolve to unique indices, got {target_blocks} -> {normalized}."
+        )
+    for original, index in zip(target_blocks, normalized, strict=True):
         if index < 0 or index >= num_blocks:
-            raise IndexError(f"target block {index} is out of range for {num_blocks} blocks.")
-    return target_blocks
+            raise IndexError(f"target block {original} resolves outside {num_blocks} blocks.")
+    return normalized
 
 
 def _validate_lora_policy(policy: LoraInjectionConfig) -> None:
