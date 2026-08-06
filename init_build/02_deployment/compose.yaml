@@ -1,0 +1,31 @@
+services:
+  train:
+    build:
+      context: ${PROJECT_ROOT}
+      dockerfile: init_build/02_deployment/Dockerfile
+      args:
+        APP_UID: ${HOST_UID:-1000}
+        APP_GID: ${HOST_GID:-1000}
+    image: noisyclip-init:${IMAGE_TAG:-pt2.11-cu128}
+    gpus: all
+    shm_size: 32gb
+    working_dir: /workspace/project
+    environment:
+      CUDA_VISIBLE_DEVICES: ${CUDA_VISIBLE_DEVICES:-0}
+      PYTHONPATH: /workspace/project/src
+      TORCH_HOME: /cache/torch
+      XDG_CACHE_HOME: /cache/xdg
+      NOISYCLIP_TRAIN_ROOT: /data/train
+      NOISYCLIP_TEST_ROOT: /data/test
+      NOISYCLIP_RUN_ROOT: /runs
+    volumes:
+      - ${PROJECT_ROOT}:/workspace/project:rw
+      - ${TRAIN_ROOT}:/data/train:ro
+      - ${TEST_ROOT}:/data/test:ro
+      - ${RUN_ROOT}:/runs:rw
+      - ${CACHE_ROOT}:/cache:rw
+    ulimits:
+      memlock: -1
+      stack: 67108864
+    command: ["bash"]
+

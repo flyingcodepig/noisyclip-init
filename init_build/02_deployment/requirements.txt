@@ -1,0 +1,28 @@
+# PyTorch and torchvision are supplied by the pinned base image.
+# OpenAI CLIP pinned to a specific official repository commit.
+clip @ git+https://github.com/openai/CLIP.git@a1d071733d7111c9c014f024669f959182114e33
+
+einops==0.8.1
+ftfy==6.3.1
+hydra-core==1.3.2
+jsonschema==4.23.0
+numpy==1.26.4
+omegaconf==2.3.0
+pandas==2.2.3
+Pillow==11.1.0
+pyarrow==19.0.1
+pydantic==2.10.6
+PyYAML==6.0.2
+regex==2024.11.6
+safetensors==0.5.3
+scikit-learn==1.6.1
+tensorboard==2.19.0
+torchmetrics==1.6.2
+tqdm==4.67.1
+
+# Development and quality gates.
+mypy==1.15.0
+pytest==8.3.5
+pytest-cov==6.0.0
+ruff==0.9.10
+types-PyYAML==6.0.12.20241230

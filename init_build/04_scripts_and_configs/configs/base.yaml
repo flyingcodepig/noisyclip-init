@@ -1,0 +1,173 @@
+schema_version: 1
+
+experiment:
+  name: base
+  stage: init
+  seed: 20260806
+  baseline_run_id: null
+  research_question: "Base configuration; do not run directly."
+  tags: []
+
+paths:
+  train_root: ${oc.env:NOISYCLIP_TRAIN_ROOT}
+  test_root: ${oc.env:NOISYCLIP_TEST_ROOT}
+  run_root: ${oc.env:NOISYCLIP_RUN_ROOT}
+  cache_root: ${oc.env:XDG_CACHE_HOME}
+  train_manifest: null
+  val_manifest: null
+  test_manifest: null
+  class_mapping: null
+
+data:
+  expected_num_classes: 500
+  class_id_regex: "^[0-9]{4}$"
+  val_fraction: 0.10
+  split_seed: 20260806
+  image_size: 224
+  allow_truncated_images: true
+  unreadable_policy: fail_audit
+  hash_files: true
+  train_transform:
+    random_resized_crop_scale: [0.75, 1.0]
+    horizontal_flip_probability: 0.5
+    color_jitter_strength: 0.1
+  strong_transform:
+    enabled: false
+    random_resized_crop_scale: [0.70, 1.0]
+    randaugment_magnitude: 5
+  eval_transform:
+    resize_short_side: 256
+    center_crop: 224
+
+model:
+  backbone:
+    name: ViT-B/32
+    pretrained: openai
+    source_allowlist: [openai_clip_official]
+    freeze: true
+  head:
+    type: linear
+    temperature_init: null
+    temperature_min: null
+    temperature_max: null
+    prototype_init:
+      enabled: false
+      method: trimmed_mean
+      keep_fraction: 0.80
+  lora:
+    enabled: false
+    target_blocks: []
+    target_projections: []
+    rank: 0
+    alpha: 0
+    dropout: 0.0
+  teacher:
+    enabled: false
+    inference_export: false
+
+noise:
+  enabled: false
+  warmup_epochs: 3
+  update_interval_epochs: 3
+  normalize_within_class: true
+  signals:
+    ema_loss: {enabled: false, coefficient: 0.0, momentum: 0.9}
+    augmentation_agreement: {enabled: false, coefficient: 0.0}
+    prototype_similarity: {enabled: false, coefficient: 0.0}
+    prototype_margin: {enabled: false, coefficient: 0.0}
+    prediction_stability: {enabled: false, coefficient: 0.0, window: 3}
+  partition:
+    trusted_quantile: 0.65
+    uncertain_quantile: 0.90
+    min_samples_per_class: 2
+  weights:
+    trusted: 1.0
+    uncertain_min: 0.3
+    uncertain_max: 0.7
+    suspicious: 0.1
+  curriculum: {enabled: false}
+  pseudolabel:
+    enabled: false
+    start_epoch: 999
+    confidence_threshold: 0.98
+    stability_window: 5
+    minimum_prototype_margin: 0.20
+    maximum_dataset_fraction: 0.05
+    pseudo_mix: 0.8
+
+loss:
+  cross_entropy:
+    enabled: true
+    label_smoothing: 0.0
+    weight: 1.0
+  elr:
+    enabled: false
+    weight: 0.0
+    start_epoch: 999
+    target_momentum: 0.7
+  consistency:
+    enabled: false
+    weight: 0.0
+    start_epoch: 999
+    temperature: 1.0
+  feature_anchor:
+    enabled: false
+    weight: 0.0
+    metric: cosine
+  logit_adjustment:
+    enabled: false
+    tau: 0.0
+
+trainer:
+  epochs: 30
+  device: cuda:0
+  precision: amp_fp16
+  batch_size: 128
+  gradient_accumulation_steps: 1
+  num_workers: 8
+  pin_memory: true
+  optimizer:
+    name: adamw
+    head_lr: 0.001
+    lora_lr: 0.00005
+    weight_decay: 0.01
+  scheduler:
+    name: cosine
+    warmup_epochs: 2
+    min_lr_ratio: 0.01
+  gradient_clip_norm: 1.0
+  deterministic: true
+  checkpoint_every_epochs: 1
+  keep_last_checkpoints: 2
+  early_stopping:
+    enabled: true
+    metric: val/top1
+    patience: 8
+    min_delta: 0.001
+
+evaluation:
+  metrics:
+    - top1
+    - macro_accuracy
+    - per_class_accuracy
+    - bottom_quartile_accuracy
+    - trusted_top1
+    - augmentation_agreement
+    - feature_cosine_to_base
+  checkpoint_selection: val/top1
+  test_time_augmentation: false
+
+tracking:
+  jsonl: true
+  tensorboard: true
+  save_sample_state_every_update: true
+  save_confusion_matrix: true
+  fail_if_run_exists: true
+  minimum_free_disk_gib: 20
+
+submission:
+  filename: pred_results.csv
+  include_header: false
+  expected_columns: [filename, class_id]
+  class_id_regex: "^[0-9]{4}$"
+

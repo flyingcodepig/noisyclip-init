@@ -1,0 +1,12 @@
+inherits: b3_trust_weight.yaml
+experiment:
+  name: b4_elr
+  research_question: "Does ELR reduce late-stage memorization of label noise?"
+  tags: [mainline, noise, elr]
+loss:
+  elr:
+    enabled: true
+    weight: 0.5
+    start_epoch: 4
+    target_momentum: 0.7
+

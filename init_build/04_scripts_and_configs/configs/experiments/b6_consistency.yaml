@@ -1,0 +1,15 @@
+inherits: b5_feature_anchor.yaml
+experiment:
+  name: b6_consistency
+  research_question: "Does weak-strong consistency improve use of uncertain samples?"
+  tags: [mainline, consistency]
+data:
+  strong_transform:
+    enabled: true
+loss:
+  consistency:
+    enabled: true
+    weight: 0.2
+    start_epoch: 4
+    temperature: 1.0
+

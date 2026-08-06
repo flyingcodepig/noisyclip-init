@@ -1,0 +1,17 @@
+inherits: b2_lora.yaml
+experiment:
+  name: b3_trust_weight
+  research_question: "Does class-aware continuous trust weighting suppress noisy labels while retaining hard samples?"
+  tags: [mainline, noise, trust]
+noise:
+  enabled: true
+  warmup_epochs: 3
+  update_interval_epochs: 3
+  normalize_within_class: true
+  signals:
+    ema_loss: {enabled: true, coefficient: 0.35, momentum: 0.9}
+    augmentation_agreement: {enabled: true, coefficient: 0.15}
+    prototype_similarity: {enabled: true, coefficient: 0.20}
+    prototype_margin: {enabled: true, coefficient: 0.20}
+    prediction_stability: {enabled: true, coefficient: 0.10, window: 3}
+

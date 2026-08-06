@@ -1,0 +1,15 @@
+inherits: b4_elr.yaml
+experiment:
+  name: b5_feature_anchor
+  research_question: "Does frozen-CLIP feature anchoring improve robustness by preserving pretrained representations?"
+  tags: [mainline, teacher, feature_anchor]
+model:
+  teacher:
+    enabled: true
+    inference_export: false
+loss:
+  feature_anchor:
+    enabled: true
+    weight: 0.05
+    metric: cosine
+

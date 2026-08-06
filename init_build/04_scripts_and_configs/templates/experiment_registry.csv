@@ -1,0 +1,2 @@
+experiment_id,status,research_question,baseline_run_id,single_change,config_path,config_digest,code_revision,dirty_diff_digest,container_image_digest,data_manifest_digest,class_mapping_digest,seed,host,gpu_name,gpu_uuid,start_time,end_time,best_epoch,best_val_top1,best_val_macro,trusted_top1,bottom_quartile_accuracy,feature_cosine_to_base,peak_vram_mib,train_minutes,decision,notes
+

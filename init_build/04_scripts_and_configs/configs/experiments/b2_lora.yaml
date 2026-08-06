@@ -1,0 +1,14 @@
+inherits: b1_cosine_proto.yaml
+experiment:
+  name: b2_lora
+  research_question: "Does limited late-block visual LoRA improve fine-grained adaptation without excessive drift?"
+  tags: [mainline, lora]
+model:
+  lora:
+    enabled: true
+    target_blocks: [-4, -3, -2, -1]
+    target_projections: [q, v]
+    rank: 8
+    alpha: 16
+    dropout: 0.05
+

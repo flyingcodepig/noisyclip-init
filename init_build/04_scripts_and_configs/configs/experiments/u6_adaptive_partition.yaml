@@ -1,0 +1,14 @@
+inherits: b6_consistency.yaml
+experiment:
+  name: u6_adaptive_partition
+  research_question: "Does JoAPR-style adaptive partitioning outperform fixed within-class quantiles?"
+  tags: [upper_bound, experimental, adaptive_partition]
+noise:
+  partition:
+    method: adaptive_mixture
+    trusted_quantile: null
+    uncertain_quantile: null
+    min_samples_per_class: 2
+    threshold_ema_momentum: 0.8
+    maximum_epoch_change: 0.10
+

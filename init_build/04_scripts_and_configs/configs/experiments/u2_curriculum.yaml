@@ -1,0 +1,13 @@
+inherits: b6_consistency.yaml
+experiment:
+  name: u2_curriculum
+  research_question: "Does explicit trusted-to-uncertain curriculum improve robustness?"
+  tags: [upper_bound, curriculum]
+noise:
+  curriculum:
+    enabled: true
+    trusted_start_epoch: 0
+    uncertain_start_epoch: 3
+    suspicious_start_epoch: 8
+    ramp_epochs: 5
+

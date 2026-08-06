@@ -1,0 +1,15 @@
+inherits: b6_consistency.yaml
+experiment:
+  name: u1_soft_pseudolabel
+  research_question: "Can strictly gated late soft pseudo-labeling repair persistent mislabels?"
+  tags: [upper_bound, pseudolabel]
+noise:
+  pseudolabel:
+    enabled: true
+    start_epoch: 12
+    confidence_threshold: 0.98
+    stability_window: 5
+    minimum_prototype_margin: 0.20
+    maximum_dataset_fraction: 0.05
+    pseudo_mix: 0.8
+

@@ -1,0 +1,29 @@
+{
+  "format_version": 1,
+  "run_id": "REQUIRED",
+  "status": "created",
+  "experiment_name": "REQUIRED",
+  "research_question": "REQUIRED",
+  "baseline_run_id": null,
+  "single_change": "REQUIRED",
+  "seed": 0,
+  "created_at_utc": "REQUIRED",
+  "completed_at_utc": null,
+  "code_revision": "REQUIRED",
+  "dirty_diff_digest": null,
+  "container_image": "pytorch/pytorch:2.11.0-cuda12.8-cudnn9-runtime",
+  "container_image_digest": "REQUIRED",
+  "config_digest": "REQUIRED",
+  "data_manifest_digest": "REQUIRED",
+  "class_mapping_digest": "REQUIRED",
+  "official_clip_weight_sha256": "REQUIRED",
+  "host": {
+    "hostname": "REQUIRED",
+    "gpu_name": "REQUIRED",
+    "gpu_uuid": "REQUIRED",
+    "driver_version": "REQUIRED"
+  },
+  "artifacts": {},
+  "failure": null
+}
+

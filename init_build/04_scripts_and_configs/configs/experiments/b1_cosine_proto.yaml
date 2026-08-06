@@ -1,0 +1,16 @@
+inherits: b0_frozen_linear.yaml
+experiment:
+  name: b1_cosine_proto
+  research_question: "Does a cosine head with robust prototype initialization improve the frozen baseline?"
+  tags: [baseline, cosine, prototype]
+model:
+  head:
+    type: cosine
+    temperature_init: 10.0
+    temperature_min: 1.0
+    temperature_max: 100.0
+    prototype_init:
+      enabled: true
+      method: trimmed_mean
+      keep_fraction: 0.80
+

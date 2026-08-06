@@ -1,0 +1,11 @@
+inherits: b6_consistency.yaml
+experiment:
+  name: u4_balance
+  research_question: "If imbalance is confirmed, does mild logit adjustment improve macro accuracy without amplifying noisy tail samples?"
+  tags: [upper_bound, conditional, imbalance]
+loss:
+  logit_adjustment:
+    enabled: true
+    tau: 0.25
+    count_source: trusted_effective_count
+

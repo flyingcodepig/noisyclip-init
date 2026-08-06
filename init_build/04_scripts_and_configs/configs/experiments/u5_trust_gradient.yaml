@@ -1,0 +1,12 @@
+inherits: b6_consistency.yaml
+experiment:
+  name: u5_trust_gradient
+  research_question: "Does trust-aligned gradient projection improve noisy-label robustness?"
+  tags: [upper_bound, experimental, trust_gradient]
+noise:
+  gradient_projection:
+    enabled: true
+    parameter_scope: lora_and_head
+    trusted_reference_quantile: 0.65
+    maximum_projection_ratio: 0.5
+

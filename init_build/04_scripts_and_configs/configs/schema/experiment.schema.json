@@ -1,0 +1,72 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "NoisyCLIP experiment configuration",
+  "type": "object",
+  "required": ["schema_version", "experiment", "paths", "data", "model", "noise", "loss", "trainer", "evaluation", "tracking", "submission"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "experiment": {
+      "type": "object",
+      "required": ["name", "stage", "seed", "research_question"],
+      "properties": {
+        "name": {"type": "string", "minLength": 1},
+        "stage": {"const": "init"},
+        "seed": {"type": "integer", "minimum": 0},
+        "baseline_run_id": {"type": ["string", "null"]},
+        "research_question": {"type": "string", "minLength": 1},
+        "tags": {"type": "array", "items": {"type": "string"}}
+      },
+      "additionalProperties": false
+    },
+    "paths": {"type": "object"},
+    "data": {
+      "type": "object",
+      "required": ["expected_num_classes", "class_id_regex", "val_fraction", "split_seed", "image_size"],
+      "properties": {
+        "expected_num_classes": {"const": 500},
+        "class_id_regex": {"const": "^[0-9]{4}$"},
+        "val_fraction": {"type": "number", "exclusiveMinimum": 0, "exclusiveMaximum": 0.5},
+        "split_seed": {"type": "integer"},
+        "image_size": {"const": 224}
+      },
+      "additionalProperties": true
+    },
+    "model": {
+      "type": "object",
+      "required": ["backbone", "head", "lora", "teacher"],
+      "properties": {
+        "backbone": {
+          "type": "object",
+          "required": ["name", "pretrained"],
+          "properties": {
+            "name": {"const": "ViT-B/32"},
+            "pretrained": {"const": "openai"}
+          },
+          "additionalProperties": true
+        },
+        "head": {"type": "object"},
+        "lora": {"type": "object"},
+        "teacher": {"type": "object"}
+      },
+      "additionalProperties": false
+    },
+    "noise": {"type": "object"},
+    "loss": {"type": "object"},
+    "trainer": {
+      "type": "object",
+      "required": ["epochs", "device", "batch_size", "gradient_accumulation_steps"],
+      "properties": {
+        "epochs": {"type": "integer", "minimum": 1},
+        "device": {"type": "string", "pattern": "^cuda:[0-9]+$"},
+        "batch_size": {"type": "integer", "minimum": 1},
+        "gradient_accumulation_steps": {"type": "integer", "minimum": 1}
+      },
+      "additionalProperties": true
+    },
+    "evaluation": {"type": "object"},
+    "tracking": {"type": "object"},
+    "submission": {"type": "object"}
+  },
+  "additionalProperties": false
+}
+

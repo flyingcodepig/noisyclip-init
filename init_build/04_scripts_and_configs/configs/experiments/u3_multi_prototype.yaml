@@ -1,0 +1,13 @@
+inherits: b6_consistency.yaml
+experiment:
+  name: u3_multi_prototype
+  research_question: "Do multiple prototypes per class better model fine-grained visual modes?"
+  tags: [upper_bound, multi_prototype]
+model:
+  head:
+    prototype_init:
+      enabled: true
+      method: multi_prototype
+      prototypes_per_class: 2
+      minimum_samples_per_prototype: 20
+

@@ -1,0 +1,6 @@
+inherits: ../base.yaml
+experiment:
+  name: b0_frozen_linear
+  research_question: "What is the frozen CLIP ViT-B/32 linear-head baseline?"
+  tags: [baseline, frozen]
+

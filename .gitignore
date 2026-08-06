@@ -1,0 +1,54 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Local Python environments
+.venv/
+venv/
+env/
+
+# Secrets and local settings
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+credentials*
+secrets*
+
+# Competition data
+data/
+dataset/
+datasets/
+初赛数据集/
+train/
+test/
+
+# Models and experiment outputs
+runs/
+outputs/
+checkpoints/
+cache/
+artifacts/
+predictions/
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+*.log
+
+# IDE and OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

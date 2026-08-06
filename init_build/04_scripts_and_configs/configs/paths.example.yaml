@@ -1,0 +1,11 @@
+# Documentation-only example. Real paths should come from container environment variables.
+paths:
+  train_root: /data/train
+  test_root: /data/test
+  run_root: /runs
+  cache_root: /cache
+  train_manifest: /runs/data_manifests/train.parquet
+  val_manifest: /runs/data_manifests/val.parquet
+  test_manifest: /runs/data_manifests/test.parquet
+  class_mapping: /runs/data_manifests/class_to_idx.json
+

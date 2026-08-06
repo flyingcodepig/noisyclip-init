@@ -1,0 +1,10 @@
+trainer:
+  batch_size: 64
+  gradient_accumulation_steps: 2
+  num_workers: 8
+  precision: amp_fp16
+runtime:
+  expected_gpu_memory_gib: 24
+  dataloader_prefetch_factor: 2
+  persistent_workers: true
+
