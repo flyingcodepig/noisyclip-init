@@ -1,4 +1,4 @@
-"""Data records and future data-pipeline components."""
+"""Data records and deterministic manifest pipeline components."""
 
 from noisyclip.data.records import Batch, SampleRecord
 
