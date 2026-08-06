@@ -63,7 +63,7 @@ class EvalTransformConfig(StrictConfigModel):
 class DataConfig(StrictConfigModel):
     """Dataset layout, audit, split, and preprocessing configuration."""
 
-    expected_num_classes: Literal[500] = 500
+    expected_num_classes: int = Field(default=500, ge=1)
     class_id_regex: Literal["^[0-9]{4}$"] = "^[0-9]{4}$"
     val_fraction: float = Field(default=0.10, gt=0.0, lt=0.5)
     split_seed: int = Field(default=20260806, ge=0)
