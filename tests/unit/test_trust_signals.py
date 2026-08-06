@@ -13,6 +13,7 @@ from noisyclip.noise.signals import (
     PredictionStabilitySignal,
     PrototypeMarginSignal,
     PrototypeSimilaritySignal,
+    update_prediction_history,
 )
 from noisyclip.noise.state import SampleState
 
@@ -111,3 +112,27 @@ def test_state_and_batch_sample_id_mismatch_fails() -> None:
 
     with pytest.raises(ValueError, match="state order"):
         PredictionStabilitySignal().compute(batch, output, None, states, None)
+
+
+def test_prediction_history_updates_probabilities_and_seen_count() -> None:
+    """Epoch history stores normalized detached EMA probabilities by sample ID."""
+
+    logits = torch.tensor([[4.0, 0.0], [0.0, 4.0]], requires_grad=True)
+    updated = update_prediction_history(_states(), logits, epoch=1, momentum=0.5)
+
+    assert [state.sample_id for state in updated] == ["a", "b"]
+    assert [state.seen_count for state in updated] == [3, 3]
+    assert all(state.updated_epoch == 1 for state in updated)
+    assert all(state.ema_probs is not None for state in updated)
+    assert all(sum(state.ema_probs or []) == pytest.approx(1.0) for state in updated)
+    assert logits.grad is None
+
+
+def test_prediction_history_rejects_wrong_probability_history() -> None:
+    """Stored probability vectors must match class count and sum to one."""
+
+    states = _states()
+    states[0].ema_probs = [0.2, 0.2]
+
+    with pytest.raises(ValueError, match="sum to 1"):
+        update_prediction_history(states, torch.zeros((2, 2)), epoch=1)

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import pytest
 import torch
 
 from noisyclip.data.records import Batch
@@ -109,3 +110,26 @@ def test_elr_teacher_history_is_detached_from_student_logits() -> None:
     assert logits.grad is not None
     for item in elr.state_dict()["targets"].values():  # type: ignore[union-attr]
         assert not item.requires_grad
+
+
+@pytest.mark.parametrize(
+    "field,value,message",
+    [
+        ("target_momentum", 1.0, "target_momentum"),
+        ("start_epoch", -1, "start_epoch"),
+        ("epsilon", 0.0, "epsilon"),
+        ("num_classes", 0, "num_classes"),
+    ],
+)
+def test_elr_restore_rejects_invalid_checkpoint_hyperparameters(
+    field: str,
+    value: object,
+    message: str,
+) -> None:
+    """Corrupt checkpoint metadata cannot silently alter ELR behavior."""
+
+    state = ELRLoss().state_dict()
+    state[field] = value
+
+    with pytest.raises((TypeError, ValueError), match=message):
+        ELRLoss().load_state_dict(state)

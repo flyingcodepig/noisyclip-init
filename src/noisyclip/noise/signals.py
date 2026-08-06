@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import torch
 import torch.nn.functional as F
@@ -232,6 +232,77 @@ class PredictionStabilitySignal:
         values = (probs * previous_probs).sum(dim=1)
         _require_finite_vector(values, field_name=self.name)
         return values
+
+
+def update_prediction_history(
+    states: list[SampleState],
+    logits: Tensor,
+    *,
+    epoch: int,
+    momentum: float = 0.9,
+) -> list[SampleState]:
+    """Update per-sample probability EMA and observation count once per epoch.
+
+    Args:
+        states: Unique sample states aligned with logits rows.
+        logits: Finite model logits shaped `[N, C]`.
+        epoch: Non-negative epoch recorded in returned states.
+        momentum: Probability EMA coefficient in `[0, 1)`.
+
+    Returns:
+        New states preserving input order, with normalized `ema_probs`,
+        `seen_count + 1`, and `updated_epoch=epoch`.
+
+    Raises:
+        ValueError: If IDs, shapes, epoch, momentum, previous probability
+            vectors, or logits are invalid.
+    """
+
+    if epoch < 0:
+        raise ValueError(f"epoch must be non-negative, got {epoch}.")
+    if not 0.0 <= momentum < 1.0:
+        raise ValueError(f"momentum must be in [0, 1), got {momentum}.")
+    if logits.ndim != 2 or logits.shape[0] != len(states) or logits.shape[1] <= 0:
+        raise ValueError(
+            f"logits must have shape [{len(states)}, C] with C > 0, got {tuple(logits.shape)}."
+        )
+    if not logits.is_floating_point() or not torch.isfinite(logits).all():
+        raise ValueError("logits must be a finite floating-point tensor.")
+    sample_ids = [state.sample_id for state in states]
+    if any(not sample_id for sample_id in sample_ids) or len(set(sample_ids)) != len(sample_ids):
+        raise ValueError("states must contain unique, non-empty sample_id values.")
+
+    probabilities = logits.detach().softmax(dim=1).to(dtype=torch.float32, device="cpu")
+    updated: list[SampleState] = []
+    for index, state in enumerate(states):
+        current = probabilities[index]
+        if state.ema_probs is None:
+            history = current
+        else:
+            if len(state.ema_probs) != logits.shape[1]:
+                raise ValueError(
+                    "ema_probs length must match logits class dimension for "
+                    f"sample_id={state.sample_id}."
+                )
+            previous = torch.tensor(state.ema_probs, dtype=torch.float32)
+            if not torch.isfinite(previous).all() or bool(
+                (previous < 0).any() or (previous > 1).any()
+            ):
+                raise ValueError(f"ema_probs is invalid for sample_id={state.sample_id}.")
+            probability_sum = float(previous.sum().item())
+            if abs(probability_sum - 1.0) > 1e-4:
+                raise ValueError(f"ema_probs must sum to 1 for sample_id={state.sample_id}.")
+            history = momentum * previous + (1.0 - momentum) * current
+        history = history / history.sum()
+        updated.append(
+            replace(
+                state,
+                seen_count=state.seen_count + 1,
+                ema_probs=history.tolist(),
+                updated_epoch=epoch,
+            )
+        )
+    return updated
 
 
 def _validate_batch_size(batch: Batch, output_weak: ModelOutput, state: list[SampleState]) -> None:

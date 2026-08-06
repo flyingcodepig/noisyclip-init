@@ -93,3 +93,16 @@ def test_resume_reads_last_committed_epoch_and_validates_state_ranges(tmp_path) 
 
     with pytest.raises(ValueError, match="partition"):
         resumed.stage_epoch([_state("a", epoch=3, partition="clean")], 3)
+
+
+def test_committed_epoch_cannot_be_staged_or_overwritten_again(tmp_path) -> None:
+    """Committed state history is append-only across retries and resumes."""
+
+    store = JsonSampleStateStore(tmp_path, expected_sample_ids=["a"])
+    store.stage_epoch([_state("a", epoch=0)], 0)
+    store.commit_epoch(0)
+
+    with pytest.raises(ValueError, match="latest committed"):
+        store.stage_epoch([_state("a", epoch=0)], 0)
+    assert store.latest_epoch == 0
+    assert store.load(["a"])[0].partition == "trusted"

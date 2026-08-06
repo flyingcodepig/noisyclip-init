@@ -132,6 +132,7 @@ class ClasswiseTrustAggregator:
         targets = _targets_from_records(records)
         num_classes = int(targets.max().item()) + 1
         normalized_signals: dict[str, Tensor] = {}
+        validated_raw_signals: dict[str, Tensor] = {}
         weighted_sum = torch.zeros(len(records), dtype=torch.float32)
         coefficient_sum = 0.0
         for name, coefficient in self.signal_coefficients.items():
@@ -141,6 +142,7 @@ class ClasswiseTrustAggregator:
                 raise ValueError(f"raw_signals is missing enabled signal {name!r}.")
             raw = raw_signals[name].detach().to(torch.float32)
             _validate_raw_signal(raw, expected_count=len(records), name=name)
+            validated_raw_signals[name] = raw
             normalized = percentile_rank_by_class(
                 raw,
                 targets,
@@ -166,7 +168,7 @@ class ClasswiseTrustAggregator:
                 replace(
                     prior,
                     ema_loss=float(
-                        normalized_signals.get("ema_loss", torch.tensor([prior.ema_loss]))[
+                        validated_raw_signals.get("ema_loss", torch.tensor([prior.ema_loss]))[
                             index if "ema_loss" in normalized_signals else 0
                         ].item()
                     ),
@@ -220,3 +222,5 @@ def _validate_raw_signal(raw: Tensor, *, expected_count: int, name: str) -> None
         raise ValueError(f"raw signal {name!r} must have shape [N], got {tuple(raw.shape)}.")
     if torch.isinf(raw).any():
         raise ValueError(f"raw signal {name!r} contains Inf values.")
+    if name == "ema_loss" and torch.isnan(raw).any():
+        raise ValueError("raw signal 'ema_loss' contains NaN values.")

@@ -160,8 +160,12 @@ class ELRLoss:
         """
 
         num_classes_raw = state_dict.get("num_classes")
-        if num_classes_raw is not None and not isinstance(num_classes_raw, int):
+        if num_classes_raw is not None and (
+            isinstance(num_classes_raw, bool) or not isinstance(num_classes_raw, int)
+        ):
             raise TypeError("ELR state num_classes must be an int or None.")
+        if isinstance(num_classes_raw, int) and num_classes_raw <= 0:
+            raise ValueError("ELR state num_classes must be positive when present.")
         targets_raw = state_dict.get("targets", {})
         if not isinstance(targets_raw, Mapping):
             raise TypeError("ELR state targets must be a mapping.")
@@ -203,15 +207,23 @@ class ELRLoss:
         start_epoch = state_dict.get("start_epoch", self.start_epoch)
         enabled = state_dict.get("enabled", self.enabled)
         epsilon = state_dict.get("epsilon", self.epsilon)
-        if not isinstance(target_momentum, float | int):
+        if isinstance(target_momentum, bool) or not isinstance(target_momentum, float | int):
             raise TypeError("ELR state target_momentum must be numeric.")
-        if not isinstance(start_epoch, int):
+        if isinstance(start_epoch, bool) or not isinstance(start_epoch, int):
             raise TypeError("ELR state start_epoch must be an int.")
         if not isinstance(enabled, bool):
             raise TypeError("ELR state enabled must be bool.")
-        if not isinstance(epsilon, float | int):
+        if isinstance(epsilon, bool) or not isinstance(epsilon, float | int):
             raise TypeError("ELR state epsilon must be numeric.")
-        self.target_momentum = float(target_momentum)
+        parsed_momentum = float(target_momentum)
+        parsed_epsilon = float(epsilon)
+        if not 0.0 <= parsed_momentum < 1.0:
+            raise ValueError("ELR state target_momentum must be in [0, 1).")
+        if start_epoch < 0:
+            raise ValueError("ELR state start_epoch must be non-negative.")
+        if parsed_epsilon <= 0.0:
+            raise ValueError("ELR state epsilon must be positive.")
+        self.target_momentum = parsed_momentum
         self.start_epoch = start_epoch
         self.enabled = enabled
-        self.epsilon = float(epsilon)
+        self.epsilon = parsed_epsilon

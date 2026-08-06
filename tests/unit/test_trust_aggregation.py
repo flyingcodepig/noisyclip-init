@@ -80,6 +80,7 @@ def test_trust_aggregation_outputs_scores_and_weights_in_range() -> None:
     assert bool(((0.0 <= scores) & (scores <= 1.0)).all())
     assert bool(((0.0 <= weights) & (weights <= 1.0)).all())
     assert len(set(weights.tolist())) > 1
+    assert [state.ema_loss for state in updated] == pytest.approx([0.9, 0.1, 9.0, 1.0])
 
 
 def test_trust_aggregation_rejects_zero_coefficients_and_missing_signal() -> None:

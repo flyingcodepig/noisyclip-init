@@ -145,6 +145,9 @@ class JsonSampleStateStore:
         """
 
         _validate_epoch(epoch)
+        latest = self.latest_epoch
+        if latest is not None and epoch <= latest:
+            raise ValueError(f"Cannot stage epoch {epoch}; latest committed epoch is {latest}.")
         _validate_states(states, expected_epoch=epoch)
         payload = {
             "version": STATE_FORMAT_VERSION,
@@ -153,6 +156,10 @@ class JsonSampleStateStore:
         }
         staged_path = self._staged_dir / f"epoch_{epoch:04d}.json"
         tmp_path = staged_path.with_suffix(".json.tmp")
+        if staged_path.exists() or tmp_path.exists():
+            raise ValueError(
+                f"Uncommitted state already exists for epoch {epoch}; roll it back first."
+            )
         _write_json_atomic(tmp_path, payload)
         os.replace(tmp_path, staged_path)
         return staged_path
@@ -170,6 +177,9 @@ class JsonSampleStateStore:
         """
 
         _validate_epoch(epoch)
+        latest = self.latest_epoch
+        if latest is not None and epoch <= latest:
+            raise ValueError(f"Cannot commit epoch {epoch}; latest committed epoch is {latest}.")
         staged_path = self._staged_dir / f"epoch_{epoch:04d}.json"
         if not staged_path.is_file():
             raise ValueError(f"No staged sample state exists for epoch {epoch}.")
@@ -186,7 +196,10 @@ class JsonSampleStateStore:
                 )
         final_name = f"epoch_{epoch:04d}.json"
         final_path = self.root / final_name
-        os.replace(staged_path, final_path)
+        if final_path.exists():
+            raise ValueError(f"Committed sample state already exists for epoch {epoch}.")
+        os.link(staged_path, final_path)
+        staged_path.unlink()
         manifest = {"version": STATE_FORMAT_VERSION, "epoch": epoch, "state_file": final_name}
         _write_json_atomic(self._manifest_path, manifest)
 
@@ -224,6 +237,8 @@ class JsonSampleStateStore:
             raise ValueError("Sample state manifest has an invalid epoch.")
         if not isinstance(state_file, str) or not state_file:
             raise ValueError("Sample state manifest has an invalid state_file.")
+        if Path(state_file).name != state_file or state_file != f"epoch_{epoch:04d}.json":
+            raise ValueError("Sample state manifest has an unsafe or inconsistent state_file.")
         return payload
 
     def _read_state_file(self, path: Path, expected_epoch: int) -> list[SampleState]:
@@ -398,6 +413,8 @@ def _validate_states(states: list[SampleState], *, expected_epoch: int) -> None:
                 raise ValueError(f"ema_probs must be non-empty for sample_id={state.sample_id}.")
             for index, value in enumerate(state.ema_probs):
                 _validate_probability(value, field_name=f"ema_probs[{index}]")
+            if abs(sum(state.ema_probs) - 1.0) > 1e-4:
+                raise ValueError(f"ema_probs must sum to 1 for sample_id={state.sample_id}.")
         _validate_probability(state.prediction_stability, field_name="prediction_stability")
         _validate_probability(state.augmentation_agreement, field_name="augmentation_agreement")
         _validate_probability(state.prototype_similarity, field_name="prototype_similarity")
