@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 import torch
 from torch import Tensor, nn
@@ -102,7 +103,16 @@ class NoisyCLIPStudent(nn.Module):
             ),
         }
 
-    def export_single_model(self, destination: Path) -> Path:
+    def export_single_model(
+        self,
+        destination: Path,
+        *,
+        preprocessing_spec: Mapping[str, Any] | None = None,
+        config_summary: Mapping[str, Any] | None = None,
+        class_to_idx: Mapping[str, int] | None = None,
+        mapping_digest: str | None = None,
+        clip_weight_metadata: Mapping[str, Any] | None = None,
+    ) -> Path:
         """Merge LoRA and export one inference model artifact.
 
         Args:
@@ -115,7 +125,15 @@ class NoisyCLIPStudent(nn.Module):
 
         from noisyclip.models.export import export_student_model
 
-        return export_student_model(self, destination)
+        return export_student_model(
+            self,
+            destination,
+            preprocessing_spec=preprocessing_spec,
+            config_summary=config_summary,
+            class_to_idx=class_to_idx,
+            mapping_digest=mapping_digest,
+            clip_weight_metadata=clip_weight_metadata,
+        )
 
     def _validate_trainability(self) -> None:
         unexpected = self._unexpected_backbone_trainables()

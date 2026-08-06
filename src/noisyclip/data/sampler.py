@@ -31,6 +31,14 @@ class DeterministicSampler(Sampler[int]):
         self._records = list(records)
         self._shuffle = shuffle
         self._seed = seed
+        self._epoch = 0
+
+    def set_epoch(self, epoch: int) -> None:
+        """Select a deterministic, epoch-specific shuffle order."""
+
+        if epoch < 0:
+            raise ValueError("sampler epoch must be non-negative.")
+        self._epoch = epoch
 
     def __iter__(self) -> Iterator[int]:
         """Yield dataset indices in stable order.
@@ -44,7 +52,7 @@ class DeterministicSampler(Sampler[int]):
             keyed = [(self._records[index].sample_id, index) for index in indices]
             keyed.sort()
             shuffled = [index for _, index in keyed]
-            random.Random(self._seed).shuffle(shuffled)
+            random.Random(f"{self._seed}:{self._epoch}").shuffle(shuffled)
             return iter(shuffled)
         return iter(indices)
 

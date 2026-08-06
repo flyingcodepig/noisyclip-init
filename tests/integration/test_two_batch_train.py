@@ -150,6 +150,8 @@ def test_two_batch_train_updates_head_freezes_backbone_and_exports_model(tmp_pat
     result = Trainer(config=config, components=components, device="cpu").fit()
     assert result.global_step == 2
     assert result.exported_model == tmp_path / "run" / "artifacts" / "model.pt"
+    assert (tmp_path / "run" / "checkpoints" / "best_top1.pt").is_file()
+    assert (tmp_path / "run" / "checkpoints" / "epoch_0000.pt").is_file()
     assert not torch.equal(components.model.head.linear.weight.detach(), before_head)
     assert torch.equal(components.model.backbone.proj.weight.detach(), before_backbone)
     package = load_exported_model_package(result.exported_model)

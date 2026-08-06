@@ -4,13 +4,15 @@ from __future__ import annotations
 
 import pytest
 import torch
-from test_two_batch_train import tiny_components
+from test_two_batch_train import tiny_batches, tiny_components, tiny_records
 from torch import nn
 
 from noisyclip.engine.checkpoint import CheckpointMetadata, load_checkpoint, save_checkpoint
 from noisyclip.engine.seed import set_seed
 from noisyclip.losses.elr import ELRLoss
 from noisyclip.noise.state import JsonSampleStateStore
+from noisyclip.tracking.artifacts import ArtifactStore
+from noisyclip.tracking.manifest import RunManifest
 
 
 def test_checkpoint_restores_elr_sample_state_and_rng_for_next_step(tmp_path) -> None:  # type: ignore[no-untyped-def]
@@ -86,6 +88,66 @@ def test_same_epoch_sample_state_cannot_be_overwritten(tmp_path) -> None:  # typ
     store.commit_epoch(0)
     with pytest.raises(ValueError, match="latest committed epoch"):
         store.stage_epoch([_state("s0", epoch=0)], 0)
+
+
+def test_trainer_resume_matches_uninterrupted_two_epoch_training(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """Trainer resume restores the exact optimizer/model state for the next epoch."""
+
+    from noisyclip.engine.context import RunContext
+    from noisyclip.engine.trainer import Trainer, TrainingFailedError
+
+    (tmp_path / "full").mkdir()
+    full_config, full_components = tiny_components(tmp_path / "full", epochs=2)
+    Trainer(config=full_config, components=full_components, device="cpu").fit()
+    expected = {
+        name: value.detach().clone() for name, value in full_components.model.state_dict().items()
+    }
+
+    (tmp_path / "resumed").mkdir()
+    config, components = tiny_components(tmp_path / "resumed", epochs=2)
+    components.train_loader = _FailOnSecondIteration(tiny_batches(tiny_records()))
+    with pytest.raises(TrainingFailedError, match="planned interruption"):
+        Trainer(config=config, components=components, device="cpu").fit()
+
+    run_dir = tmp_path / "resumed" / "run"
+    (tmp_path / "fresh").mkdir()
+    _, resumed = tiny_components(tmp_path / "fresh", epochs=2)
+    resumed.run_context = RunContext(
+        run_id="run",
+        run_dir=run_dir,
+        seed=components.run_context.seed,
+        num_classes=components.run_context.num_classes,
+        class_to_idx=components.run_context.class_to_idx,
+        config_digest=components.run_context.config_digest,
+        data_digest=components.run_context.data_digest,
+    )
+    resumed.artifact_store = ArtifactStore(run_dir)
+    resumed.run_manifest = RunManifest.open(run_dir)
+    resumed.state_store = JsonSampleStateStore(
+        run_dir / "sample_state", [record.sample_id for record in resumed.train_records]
+    )
+    resumed.resume_checkpoint = run_dir / "checkpoints" / "last.pt"
+    result = Trainer(config=config, components=resumed, device="cpu").fit()
+
+    assert result.epochs_completed == 2
+    assert not (run_dir / "FAILED").exists()
+    assert (run_dir / "DONE").is_file()
+    for name, value in resumed.model.state_dict().items():
+        assert torch.allclose(value, expected[name])
+
+
+class _FailOnSecondIteration:
+    """Iterable that simulates a process failure after one complete epoch."""
+
+    def __init__(self, batches):  # type: ignore[no-untyped-def]
+        self.batches = batches
+        self.iterations = 0
+
+    def __iter__(self):  # type: ignore[no-untyped-def]
+        self.iterations += 1
+        if self.iterations == 2:
+            raise RuntimeError("planned interruption")
+        return iter(self.batches)
 
 
 def _state(sample_id: str, *, epoch: int):

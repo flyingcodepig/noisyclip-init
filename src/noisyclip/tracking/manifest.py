@@ -75,6 +75,44 @@ class RunManifest:
         manifest.write()
         return manifest
 
+    @classmethod
+    def open(cls, run_dir: Path | str) -> RunManifest:
+        """Open an existing run manifest for an explicitly requested resume."""
+
+        root = Path(run_dir).resolve()
+        path = root / "manifest.json"
+        if not path.is_file():
+            raise FileNotFoundError(f"Run manifest does not exist: {path}")
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(raw, Mapping) or not isinstance(raw.get("metadata"), Mapping):
+            raise ValueError(f"Run manifest is malformed: {path}")
+        status = raw.get("status")
+        allowed: set[str] = {
+            "CREATED",
+            "PREFLIGHT_OK",
+            "DATA_READY",
+            "MODEL_READY",
+            "TRAINING",
+            "VALIDATING",
+            "CHECKPOINTED",
+            "FAILED",
+        }
+        if status not in allowed:
+            raise ValueError(f"Run status cannot be resumed: {status!r}")
+        metadata = dict(raw["metadata"])
+        manifest = cls(root, metadata)
+        if status == "FAILED":
+            failed_marker = root / "FAILED"
+            if failed_marker.is_file():
+                metadata["previous_failure_marker"] = failed_marker.read_text(
+                    encoding="utf-8"
+                ).strip()
+                failed_marker.unlink()
+            manifest.status = "CHECKPOINTED"
+        else:
+            manifest.status = status
+        return manifest
+
     def transition(self, status: RunStatus, *, extra: Mapping[str, Any] | None = None) -> None:
         """Update manifest status and persist it.
 

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from contextlib import nullcontext
 from dataclasses import dataclass
 from typing import Any
@@ -57,6 +57,7 @@ class PrecisionManager:
         self.device = device
         self.use_amp = config.precision == "amp_fp16" and device.type == "cuda"
         self.scaler = torch.amp.GradScaler("cuda", enabled=self.use_amp)
+        self._pending_microbatches = 0
 
     def autocast(self) -> Any:
         """Return an autocast context manager for forward/loss computation."""
@@ -80,8 +81,8 @@ class PrecisionManager:
             raise ValueError(f"loss must be scalar, got shape {tuple(loss.shape)}.")
         if not torch.isfinite(loss).item():
             raise NonFiniteTrainingError("Training loss contains NaN or Inf.")
-        scaled = loss / self.config.gradient_accumulation_steps
-        self.scaler.scale(scaled).backward()
+        self.scaler.scale(loss).backward()
+        self._pending_microbatches += 1
 
     def step_if_needed(
         self,
@@ -89,6 +90,8 @@ class PrecisionManager:
         microbatch_index: int,
         model: nn.Module,
         optimizer: torch.optim.Optimizer,
+        force: bool = False,
+        gradient_validator: Callable[[], None] | None = None,
     ) -> bool:
         """Run an optimizer step at accumulation boundaries.
 
@@ -104,20 +107,31 @@ class PrecisionManager:
             NonFiniteTrainingError: If any trainable gradient is NaN or Inf.
         """
 
-        if (microbatch_index + 1) % self.config.gradient_accumulation_steps != 0:
+        del microbatch_index
+        if self._pending_microbatches == 0:
+            return False
+        if not force and self._pending_microbatches < self.config.gradient_accumulation_steps:
             return False
         self.scaler.unscale_(optimizer)
+        for parameter in model.parameters():
+            if parameter.grad is not None:
+                parameter.grad.div_(self._pending_microbatches)
         check_gradients_finite(model.parameters())
+        if gradient_validator is not None:
+            gradient_validator()
         torch.nn.utils.clip_grad_norm_(model.parameters(), self.config.gradient_clip_norm)
         check_gradients_finite(model.parameters())
         self.scaler.step(optimizer)
         self.scaler.update()
         optimizer.zero_grad(set_to_none=True)
+        self._pending_microbatches = 0
         return True
 
     def state_dict(self) -> dict[str, object]:
         """Return a checkpointable GradScaler state mapping."""
 
+        if self._pending_microbatches:
+            raise RuntimeError("Cannot checkpoint with unstepped accumulated gradients.")
         return {"use_amp": self.use_amp, "scaler": self.scaler.state_dict()}
 
     def load_state_dict(self, state_dict: dict[str, object]) -> None:
@@ -134,6 +148,7 @@ class PrecisionManager:
         if not isinstance(scaler_state, dict):
             raise TypeError("precision scaler state must be a dictionary.")
         self.scaler.load_state_dict(scaler_state)
+        self._pending_microbatches = 0
 
 
 def check_tensor_finite(name: str, tensor: Tensor) -> None:

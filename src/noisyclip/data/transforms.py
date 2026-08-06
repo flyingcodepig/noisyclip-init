@@ -23,7 +23,7 @@ CLIP_IMAGE_STD: tuple[float, float, float] = (0.26862954, 0.26130258, 0.27577711
 TransformMode = Literal["train_weak", "train_strong", "eval"]
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(slots=True)
 class ClipImageTransform:
     """Transform a Pillow image to normalized CLIP tensor shape `[3, 224, 224]`.
 
@@ -51,6 +51,7 @@ class ClipImageTransform:
     horizontal_flip_probability: float = 0.5
     color_jitter_strength: float = 0.1
     seed: int | None = None
+    epoch: int = 0
 
     def __post_init__(self) -> None:
         """Validate transform ranges before any image is processed.
@@ -112,7 +113,14 @@ class ClipImageTransform:
     def _rng(self, sample_id: str | None) -> random.Random:
         if self.seed is None or sample_id is None:
             return random.Random()
-        return random.Random(f"{self.seed}:{self.mode}:{sample_id}")
+        return random.Random(f"{self.seed}:{self.epoch}:{self.mode}:{sample_id}")
+
+    def set_epoch(self, epoch: int) -> None:
+        """Select deterministic epoch-specific training augmentation."""
+
+        if epoch < 0:
+            raise ValueError("transform epoch must be non-negative.")
+        self.epoch = epoch
 
 
 def build_transform(

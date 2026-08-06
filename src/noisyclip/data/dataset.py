@@ -101,6 +101,14 @@ class ManifestImageDataset(Dataset[dict[str, Any]]):
 
         return len(self.records)
 
+    def set_epoch(self, epoch: int) -> None:
+        """Forward an epoch number to deterministic train transforms."""
+
+        for transform in (self.image_weak_transform, self.image_strong_transform):
+            setter = getattr(transform, "set_epoch", None)
+            if callable(setter):
+                setter(epoch)
+
     def __getitem__(self, index: int) -> dict[str, Any]:
         """Load one sample and return fields compatible with `collate_batch`.
 

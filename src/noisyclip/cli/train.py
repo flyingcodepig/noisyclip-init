@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from collections.abc import Sequence
 from pathlib import Path
 
-from noisyclip.config.loader import load_config
-from noisyclip.tracking.artifacts import create_run_dir
+from noisyclip.engine.assembly import AssemblyError, run_training
 from noisyclip.tracking.manifest import generate_run_id
 
 
@@ -18,6 +18,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Train a NoisyCLIP experiment.")
     parser.add_argument("--config", required=True, help="Path to a strict YAML config.")
     parser.add_argument("--run-id", default=None, help="Optional explicit run id.")
+    parser.add_argument(
+        "--resume",
+        type=Path,
+        default=None,
+        help="Explicit checkpoint used to resume the same run directory.",
+    )
     return parser
 
 
@@ -35,43 +41,45 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     args = build_parser().parse_args(argv)
     try:
+        from noisyclip.config.loader import load_config
+
         config = load_config(args.config)
         run_id = args.run_id or generate_run_id(config.experiment.name)
-        _preflight_run_directory(config.paths.run_root, run_id, config.tracking.fail_if_run_exists)
+        if args.resume is not None and args.run_id is None:
+            raise ValueError("--resume requires the original --run-id.")
+        result = run_training(
+            args.config,
+            run_id=run_id,
+            resume_checkpoint=args.resume,
+        )
+    except (AssemblyError, FileExistsError, FileNotFoundError, OSError) as exc:
+        sys.stderr.write(f"DATA_OR_COMPLIANCE_INVALID: {exc}\n")
+        return 3
     except (TypeError, ValueError) as exc:
         sys.stderr.write(f"CONFIG_INVALID: {exc}\n")
         return 2
-    except (FileExistsError, OSError) as exc:
-        sys.stderr.write(f"DATA_OR_COMPLIANCE_INVALID: {exc}\n")
-        return 3
+    except RuntimeError as exc:
+        sys.stderr.write(f"TRAINING_FAILED: {exc}\n")
+        return 4
 
-    sys.stderr.write(
-        "TRAINING_ASSEMBLY_REQUIRED: pass validated components to "
-        "noisyclip.engine.trainer.Trainer; "
-        "the CLI does not construct CLIP weights or datasets by itself.\n"
+    sys.stdout.write(
+        json.dumps(
+            {
+                "status": "ok",
+                "run_id": run_id,
+                "epochs_completed": result.epochs_completed,
+                "global_step": result.global_step,
+                "last_checkpoint": str(result.last_checkpoint),
+                "exported_model": (
+                    None if result.exported_model is None else str(result.exported_model)
+                ),
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n"
     )
-    return 4
-
-
-def _preflight_run_directory(run_root: str, run_id: str, fail_if_run_exists: bool) -> None:
-    """Validate and create the run directory before expensive model construction.
-
-    Args:
-        run_root: Configured run root. Unresolved env placeholders are rejected.
-        run_id: Explicit or generated run identifier.
-        fail_if_run_exists: Whether to refuse an existing run directory.
-
-    Raises:
-        ValueError: If `run_root` still contains an unresolved environment
-            placeholder.
-        FileExistsError: If the run directory already exists and overwrite is
-            forbidden.
-        OSError: If the directory cannot be created.
-    """
-
-    if run_root.startswith("${oc.env:"):
-        raise ValueError("paths.run_root is unresolved; set NOISYCLIP_RUN_ROOT.")
-    create_run_dir(Path(run_root), run_id, fail_if_run_exists=fail_if_run_exists)
+    return 0
 
 
 if __name__ == "__main__":

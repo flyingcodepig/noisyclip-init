@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -12,18 +12,23 @@ from torch import Tensor, nn
 
 from noisyclip.config.schema import ProjectConfig
 from noisyclip.data.records import Batch, SampleRecord
-from noisyclip.engine.checkpoint import CheckpointMetadata, save_checkpoint
+from noisyclip.engine.checkpoint import CheckpointMetadata, load_checkpoint, save_checkpoint
 from noisyclip.engine.context import RunContext
 from noisyclip.engine.evaluator import EvaluationResult, Evaluator, save_evaluation_artifacts
 from noisyclip.engine.precision import NonFiniteTrainingError, PrecisionConfig, PrecisionManager
 from noisyclip.losses.outputs import LossOutput
+from noisyclip.models.outputs import ModelOutput
+from noisyclip.models.prototypes import build_prototype_builder
 from noisyclip.noise.curriculum import PartitionCurriculum
 from noisyclip.noise.partition import apply_partitions, partition_by_class
+from noisyclip.noise.signals import update_prediction_history
 from noisyclip.noise.state import SampleState, SampleStateStore
 from noisyclip.noise.trust import ClasswiseTrustAggregator
+from noisyclip.submission.mapping import mapping_digest
 from noisyclip.tracking.artifacts import ArtifactStore
 from noisyclip.tracking.logger import JsonlLogger
 from noisyclip.tracking.manifest import RunManifest
+from noisyclip.utils.atomic import atomic_copy_file
 
 
 class CompositeLossLike(Protocol):
@@ -32,8 +37,8 @@ class CompositeLossLike(Protocol):
     def __call__(
         self,
         batch: Batch,
-        student_weak: object,
-        student_strong: object | None,
+        student_weak: ModelOutput,
+        student_strong: ModelOutput | None,
         teacher_embedding: Tensor | None,
         sample_states: list[SampleState],
         epoch: int,
@@ -59,6 +64,10 @@ class TrainerComponents:
     teacher: Any | None = None
     trust_aggregator: ClasswiseTrustAggregator | None = None
     curriculum: PartitionCurriculum | None = None
+    clip_weight_metadata: Mapping[str, object] | None = None
+    preprocessing_spec: Mapping[str, object] | None = None
+    config_summary: Mapping[str, object] | None = None
+    resume_checkpoint: Path | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -114,6 +123,8 @@ class Trainer:
         )
         self.global_step = 0
         self.best_metric: float | None = None
+        self.early_best_metric: float | None = None
+        self.epochs_without_improvement = 0
 
     def preflight(self) -> None:
         """Validate data, loss, trainable parameters, and run boundaries.
@@ -126,7 +137,7 @@ class Trainer:
 
         _reject_test_records(self.components.train_records)
         _reject_all_losses_disabled(self.config)
-        validate_trainable_parameter_set(self.components.model, self.config.experiment.stage)
+        validate_trainable_parameter_set(self.components.model, _trainability_stage(self.config))
         self.components.run_manifest.transition("PREFLIGHT_OK")
 
     def fit(self) -> TrainResult:
@@ -143,12 +154,16 @@ class Trainer:
         self.preflight()
         self.components.run_manifest.transition("DATA_READY")
         self.components.model.to(self.device)
+        if self.components.teacher is not None:
+            self.components.teacher.to(self.device)
         self.components.run_manifest.transition("MODEL_READY")
         logger = JsonlLogger(self.components.artifact_store.metric("epoch_metrics.jsonl"))
         last_checkpoint = self.components.artifact_store.checkpoint("last.pt")
         exported_model: Path | None = None
         try:
-            for epoch in range(self.config.trainer.epochs):
+            start_epoch = self._restore_if_requested()
+            epochs_completed = start_epoch
+            for epoch in range(start_epoch, self.config.trainer.epochs):
                 self.components.run_manifest.transition("TRAINING", extra={"epoch": epoch})
                 previous_states = self._load_previous_states()
                 train_stats = self._train_epoch(epoch, previous_states)
@@ -160,9 +175,10 @@ class Trainer:
                 ).evaluate(self.components.val_loader)
                 new_states = self._update_sample_states(epoch, previous_states, train_stats)
                 self.components.state_store.stage_epoch(new_states, epoch)
+                checkpoint_improved = self._update_best(val_result)
                 loss_state = _loss_state_dict(self.components.loss)
-                last_checkpoint = save_checkpoint(
-                    last_checkpoint,
+                epoch_checkpoint = save_checkpoint(
+                    self.components.artifact_store.checkpoint(f"epoch_{epoch:04d}.pt"),
                     model=self.components.model,
                     optimizer=self.components.optimizer,
                     scheduler=self.components.scheduler,
@@ -173,15 +189,43 @@ class Trainer:
                         sample_state_epoch=epoch,
                         config_digest=self.components.run_context.config_digest,
                         data_digest=self.components.run_context.data_digest,
+                        best_metric=self.best_metric,
+                        early_best_metric=self.early_best_metric,
+                        epochs_without_improvement=self.epochs_without_improvement,
                     ),
                     loss_state=loss_state,
                     minimum_free_bytes=int(self.config.tracking.minimum_free_disk_gib * 1024**3),
                 )
                 self.components.run_manifest.transition("CHECKPOINTED", extra={"epoch": epoch})
                 self.components.state_store.commit_epoch(epoch)
+                last_checkpoint = atomic_copy_file(
+                    epoch_checkpoint,
+                    last_checkpoint,
+                    minimum_free_bytes=int(self.config.tracking.minimum_free_disk_gib * 1024**3),
+                )
+                if checkpoint_improved:
+                    atomic_copy_file(
+                        epoch_checkpoint,
+                        self.components.artifact_store.checkpoint(
+                            _best_checkpoint_name(self.config.evaluation.checkpoint_selection)
+                        ),
+                        minimum_free_bytes=int(
+                            self.config.tracking.minimum_free_disk_gib * 1024**3
+                        ),
+                    )
+                    save_evaluation_artifacts(
+                        val_result, self.components.artifact_store.metric("best_eval")
+                    )
                 record = _epoch_record(epoch, train_stats, val_result, self.global_step)
                 logger.write(record)
-                self._update_best(val_result)
+                epochs_completed = epoch + 1
+                if (
+                    self.config.trainer.early_stopping.enabled
+                    and self.epochs_without_improvement
+                    >= self.config.trainer.early_stopping.patience
+                ):
+                    break
+            self._restore_best_for_export()
             exported_model = self._export_final_model()
             self.components.run_manifest.mark_done()
         except Exception as exc:
@@ -189,7 +233,7 @@ class Trainer:
             self.components.run_manifest.mark_failed(str(exc), stage="training")
             raise TrainingFailedError(str(exc)) from exc
         return TrainResult(
-            epochs_completed=self.config.trainer.epochs,
+            epochs_completed=epochs_completed,
             global_step=self.global_step,
             best_metric=self.best_metric,
             last_checkpoint=last_checkpoint,
@@ -205,10 +249,13 @@ class Trainer:
         by_id = {state.sample_id: state for state in previous_states}
         ordered_ids = [record.sample_id for record in self.components.train_records]
         per_sample_loss: dict[str, Tensor] = {}
-        per_sample_probs: dict[str, Tensor] = {}
+        per_sample_logits: dict[str, Tensor] = {}
+        per_sample_strong_logits: dict[str, Tensor] = {}
+        per_sample_embedding: dict[str, Tensor] = {}
         loss_total = 0.0
         step_count = 0
         self.components.optimizer.zero_grad(set_to_none=True)
+        _set_loader_epoch(self.components.train_loader, epoch)
         for batch_index, batch in enumerate(self.components.train_loader):
             _reject_test_batch(batch)
             states = [by_id[sample_id] for sample_id in batch.sample_ids]
@@ -234,9 +281,11 @@ class Trainer:
                 microbatch_index=batch_index,
                 model=self.components.model,
                 optimizer=self.components.optimizer,
+                gradient_validator=lambda: validate_frozen_gradients(
+                    self.components.model, _trainability_stage(self.config)
+                ),
             )
             if stepped:
-                validate_frozen_gradients(self.components.model, self.config.experiment.stage)
                 if self.components.scheduler is not None:
                     self.components.scheduler.step()
                 self.global_step += 1
@@ -248,10 +297,30 @@ class Trainer:
                     raise ValueError("per_sample_supervised must have shape [B].")
                 for index, sample_id in enumerate(batch.sample_ids):
                     _store_once(per_sample_loss, sample_id, detached_loss[index])
-            probabilities = torch.softmax(_get_logits(weak_output).detach().cpu().float(), dim=1)
+            logits = _get_logits(weak_output).detach().cpu().float()
+            embedding = _get_embedding(weak_output).detach().cpu().float()
+            strong_logits = (
+                None if strong_output is None else _get_logits(strong_output).detach().cpu().float()
+            )
             for index, sample_id in enumerate(batch.sample_ids):
-                _store_once(per_sample_probs, sample_id, probabilities[index])
-        missing = sorted(set(ordered_ids) - set(per_sample_probs))
+                _store_once(per_sample_logits, sample_id, logits[index])
+                _store_once(per_sample_embedding, sample_id, embedding[index])
+                if strong_logits is not None:
+                    _store_once(per_sample_strong_logits, sample_id, strong_logits[index])
+        stepped = self.precision.step_if_needed(
+            microbatch_index=step_count,
+            model=self.components.model,
+            optimizer=self.components.optimizer,
+            force=True,
+            gradient_validator=lambda: validate_frozen_gradients(
+                self.components.model, _trainability_stage(self.config)
+            ),
+        )
+        if stepped:
+            if self.components.scheduler is not None:
+                self.components.scheduler.step()
+            self.global_step += 1
+        missing = sorted(set(ordered_ids) - set(per_sample_logits))
         if missing:
             raise ValueError(f"Training epoch did not visit sample_id(s): {missing}.")
         return {
@@ -260,17 +329,24 @@ class Trainer:
                 sample_id: per_sample_loss.get(sample_id, torch.tensor(0.0))
                 for sample_id in ordered_ids
             },
-            "per_sample_probs": {
-                sample_id: per_sample_probs[sample_id] for sample_id in ordered_ids
+            "per_sample_logits": {
+                sample_id: per_sample_logits[sample_id] for sample_id in ordered_ids
+            },
+            "per_sample_strong_logits": {
+                sample_id: per_sample_strong_logits[sample_id]
+                for sample_id in ordered_ids
+                if sample_id in per_sample_strong_logits
+            },
+            "per_sample_embedding": {
+                sample_id: per_sample_embedding[sample_id] for sample_id in ordered_ids
             },
         }
 
     def _load_previous_states(self) -> list[SampleState]:
         sample_ids = [record.sample_id for record in self.components.train_records]
-        try:
-            return self.components.state_store.load(sample_ids)
-        except ValueError:
+        if getattr(self.components.state_store, "latest_epoch", None) is None:
             return [_default_state(sample_id) for sample_id in sample_ids]
+        return self.components.state_store.load(sample_ids)
 
     def _update_sample_states(
         self,
@@ -279,27 +355,37 @@ class Trainer:
         train_stats: Mapping[str, object],
     ) -> list[SampleState]:
         records = self.components.train_records
-        previous_by_id = {state.sample_id: state for state in previous_states}
-        probs_by_id = _tensor_mapping(train_stats["per_sample_probs"])
+        logits_by_id = _tensor_mapping(train_stats["per_sample_logits"])
+        strong_logits_by_id = _tensor_mapping(train_stats["per_sample_strong_logits"])
+        embeddings_by_id = _tensor_mapping(train_stats["per_sample_embedding"])
         losses_by_id = _tensor_mapping(train_stats["per_sample_loss"])
-        history_updated = [
-            _update_prediction_history(
-                previous_by_id[record.sample_id],
-                probs_by_id[record.sample_id],
-                losses_by_id[record.sample_id],
-                epoch,
+        ordered_logits = torch.stack([logits_by_id[record.sample_id] for record in records])
+        history_updated = update_prediction_history(
+            previous_states,
+            ordered_logits,
+            epoch=epoch,
+            momentum=self.config.noise.signals.ema_loss.momentum,
+        )
+        should_update_trust = (
+            self.config.noise.enabled
+            and self.components.trust_aggregator is not None
+            and epoch >= self.config.noise.warmup_epochs
+            and (epoch - self.config.noise.warmup_epochs) % self.config.noise.update_interval_epochs
+            == 0
+        )
+        if should_update_trust:
+            trust_aggregator = self.components.trust_aggregator
+            if trust_aggregator is None:  # pragma: no cover - narrowed above.
+                raise RuntimeError("noise update requires a trust aggregator.")
+            raw_signals = self._raw_trust_signals(
+                records=records,
+                previous_states=previous_states,
+                logits_by_id=logits_by_id,
+                strong_logits_by_id=strong_logits_by_id,
+                embeddings_by_id=embeddings_by_id,
+                losses_by_id=losses_by_id,
             )
-            for record in records
-        ]
-        if self.components.trust_aggregator is not None:
-            raw_signals = {
-                "ema_loss": torch.stack([losses_by_id[record.sample_id] for record in records]),
-                "prediction_stability": torch.tensor(
-                    [state.prediction_stability for state in history_updated],
-                    dtype=torch.float32,
-                ),
-            }
-            aggregated = self.components.trust_aggregator.update_epoch(
+            aggregated = trust_aggregator.update_epoch(
                 records,
                 raw_signals,
                 history_updated,
@@ -307,6 +393,8 @@ class Trainer:
             )
         else:
             aggregated = history_updated
+        if not self.config.noise.enabled:
+            return aggregated
         targets = torch.tensor([_target(record) for record in records], dtype=torch.int64)
         trust_scores = torch.tensor(
             [state.trust_score for state in aggregated],
@@ -325,18 +413,154 @@ class Trainer:
             return self.components.curriculum.apply(partitioned, epoch)
         return partitioned
 
-    def _update_best(self, result: EvaluationResult) -> None:
+    def _raw_trust_signals(
+        self,
+        *,
+        records: list[SampleRecord],
+        previous_states: list[SampleState],
+        logits_by_id: Mapping[str, Tensor],
+        strong_logits_by_id: Mapping[str, Tensor],
+        embeddings_by_id: Mapping[str, Tensor],
+        losses_by_id: Mapping[str, Tensor],
+    ) -> dict[str, Tensor]:
+        trust_aggregator = self.components.trust_aggregator
+        if trust_aggregator is None:
+            raise RuntimeError("raw trust signals require a trust aggregator.")
+        enabled = trust_aggregator.signal_coefficients
+        raw: dict[str, Tensor] = {}
+        if enabled.get("ema_loss", 0.0) > 0.0:
+            momentum = self.config.noise.signals.ema_loss.momentum
+            current = torch.stack([losses_by_id[record.sample_id] for record in records])
+            previous = torch.tensor([state.ema_loss for state in previous_states])
+            seen = torch.tensor([state.seen_count > 0 for state in previous_states])
+            raw["ema_loss"] = torch.where(
+                seen,
+                momentum * previous + (1 - momentum) * current,
+                current,
+            )
+        if enabled.get("prediction_stability", 0.0) > 0.0:
+            values = []
+            for record, state in zip(records, previous_states, strict=True):
+                current = logits_by_id[record.sample_id].softmax(dim=0)
+                if state.ema_probs is None:
+                    values.append(torch.tensor(0.0))
+                else:
+                    values.append((current * torch.tensor(state.ema_probs)).sum())
+            raw["prediction_stability"] = torch.stack(values)
+        if enabled.get("augmentation_agreement", 0.0) > 0.0:
+            missing = [r.sample_id for r in records if r.sample_id not in strong_logits_by_id]
+            if missing:
+                raise ValueError("augmentation_agreement requires strong views for every sample.")
+            raw["augmentation_agreement"] = torch.stack(
+                [
+                    (
+                        logits_by_id[r.sample_id].softmax(dim=0)
+                        * strong_logits_by_id[r.sample_id].softmax(dim=0)
+                    ).sum()
+                    for r in records
+                ]
+            )
+        prototype_names = ("prototype_similarity", "prototype_margin")
+        if any(enabled.get(name, 0.0) > 0.0 for name in prototype_names):
+            embeddings = torch.stack([embeddings_by_id[r.sample_id] for r in records])
+            targets = torch.tensor([_target(r) for r in records], dtype=torch.int64)
+            method = self.config.model.head.prototype_init.method
+            if method == "multi_prototype":
+                raise ValueError("multi_prototype trust signals require the U3 integration.")
+            prototypes = build_prototype_builder(
+                method,
+                keep_fraction=self.config.model.head.prototype_init.keep_fraction,
+            ).fit(embeddings, targets, None, self.components.run_context.num_classes)
+            similarities = embeddings @ prototypes.T
+            target_scores = similarities.gather(1, targets[:, None]).squeeze(1)
+            if enabled.get("prototype_similarity", 0.0) > 0.0:
+                raw["prototype_similarity"] = target_scores
+            if enabled.get("prototype_margin", 0.0) > 0.0:
+                masked = similarities.clone()
+                masked.scatter_(1, targets[:, None], float("-inf"))
+                raw["prototype_margin"] = target_scores - masked.max(dim=1).values
+        return raw
+
+    def _restore_if_requested(self) -> int:
+        checkpoint = self.components.resume_checkpoint
+        if checkpoint is None:
+            return 0
+        loss_objects: dict[str, Any] = {}
+        elr = getattr(self.components.loss, "elr", None)
+        if elr is not None:
+            loss_objects["elr"] = elr
+        metadata = load_checkpoint(
+            checkpoint,
+            model=self.components.model,
+            optimizer=self.components.optimizer,
+            scheduler=self.components.scheduler,
+            precision_manager=self.precision,
+            loss_objects=loss_objects,
+            map_location=self.device,
+        )
+        if metadata.config_digest != self.components.run_context.config_digest:
+            raise TrainingPreflightError("Resume checkpoint config digest mismatch.")
+        if metadata.data_digest != self.components.run_context.data_digest:
+            raise TrainingPreflightError("Resume checkpoint data digest mismatch.")
+        latest_epoch = getattr(self.components.state_store, "latest_epoch", None)
+        if metadata.sample_state_epoch != latest_epoch:
+            raise TrainingPreflightError("Resume checkpoint/sample-state epoch mismatch.")
+        self.global_step = metadata.global_step
+        self.best_metric = metadata.best_metric
+        self.early_best_metric = metadata.early_best_metric
+        self.epochs_without_improvement = metadata.epochs_without_improvement
+        return metadata.epoch + 1
+
+    def _update_best(self, result: EvaluationResult) -> bool:
         value = result.metrics.get(self.config.evaluation.checkpoint_selection)
-        if value is not None and (self.best_metric is None or value > self.best_metric):
+        improved = value is not None and (self.best_metric is None or value > self.best_metric)
+        if improved and value is not None:
             self.best_metric = float(value)
+        early_value = result.metrics.get(self.config.trainer.early_stopping.metric)
+        if early_value is not None and (
+            self.early_best_metric is None
+            or early_value > self.early_best_metric + self.config.trainer.early_stopping.min_delta
+        ):
+            self.early_best_metric = float(early_value)
+            self.epochs_without_improvement = 0
+        else:
+            self.epochs_without_improvement += 1
         save_evaluation_artifacts(result, self.components.artifact_store.metric("last_eval"))
+        return improved
 
     def _export_final_model(self) -> Path | None:
         destination = self.components.artifact_store.artifact("model.pt")
         export = getattr(self.components.model, "export_single_model", None)
         if callable(export):
-            return Path(export(destination))
+            if self.components.clip_weight_metadata is None:
+                return Path(export(destination))
+            return Path(
+                export(
+                    destination,
+                    preprocessing_spec=self.components.preprocessing_spec,
+                    config_summary=self.components.config_summary,
+                    class_to_idx=self.components.run_context.class_to_idx,
+                    mapping_digest=mapping_digest(self.components.run_context.class_to_idx),
+                    clip_weight_metadata=self.components.clip_weight_metadata,
+                )
+            )
         return None
+
+    def _restore_best_for_export(self) -> None:
+        best_path = self.components.artifact_store.checkpoint(
+            _best_checkpoint_name(self.config.evaluation.checkpoint_selection)
+        )
+        if not best_path.is_file():
+            return
+        metadata = load_checkpoint(
+            best_path,
+            model=self.components.model,
+            map_location=self.device,
+        )
+        if metadata.config_digest != self.components.run_context.config_digest:
+            raise TrainingPreflightError("Best checkpoint config digest mismatch before export.")
+        if metadata.data_digest != self.components.run_context.data_digest:
+            raise TrainingPreflightError("Best checkpoint data digest mismatch before export.")
 
 
 def validate_trainable_parameter_set(model: nn.Module, stage: str) -> None:
@@ -442,6 +666,15 @@ def _get_logits(output: object) -> Tensor:
     return logits
 
 
+def _get_embedding(output: object) -> Tensor:
+    embedding = getattr(output, "embedding", None)
+    if not isinstance(embedding, Tensor):
+        raise ValueError("model output must expose embedding tensor.")
+    if not torch.isfinite(embedding).all():
+        raise NonFiniteTrainingError("model embedding contains NaN or Inf.")
+    return embedding
+
+
 def _store_once(store: dict[str, Tensor], sample_id: str, value: Tensor) -> None:
     if sample_id in store:
         raise ValueError(f"sample_id was seen more than once in the same epoch: {sample_id}.")
@@ -464,37 +697,6 @@ def _default_state(sample_id: str) -> SampleState:
         pseudo_target=None,
         pseudo_confidence=None,
         updated_epoch=0,
-    )
-
-
-def _update_prediction_history(
-    state: SampleState,
-    probabilities: Tensor,
-    supervised_loss: Tensor,
-    epoch: int,
-) -> SampleState:
-    if probabilities.ndim != 1 or not torch.isfinite(probabilities).all():
-        raise ValueError("probabilities must be finite [C].")
-    if bool((probabilities < 0).any()) or abs(float(probabilities.sum().item()) - 1.0) > 1e-4:
-        raise ValueError("probabilities must be in [0, 1] and sum to 1.")
-    previous = state.ema_probs
-    stability = 1.0
-    if previous is not None:
-        previous_tensor = torch.tensor(previous, dtype=torch.float32)
-        if previous_tensor.shape != probabilities.shape:
-            raise ValueError("previous ema_probs class count differs from current probabilities.")
-        stability_tensor = (1.0 - 0.5 * torch.abs(probabilities - previous_tensor).sum()).clamp(
-            0,
-            1,
-        )
-        stability = float(stability_tensor)
-    return replace(
-        state,
-        seen_count=state.seen_count + 1,
-        ema_loss=float(supervised_loss.detach().cpu().item()),
-        ema_probs=[float(item) for item in probabilities.tolist()],
-        prediction_stability=stability,
-        updated_epoch=epoch,
     )
 
 
@@ -547,3 +749,26 @@ def _float_stat(value: object) -> float:
     if isinstance(value, int | float):
         return float(value)
     raise TypeError(f"stat value must be numeric, got {type(value).__name__}.")
+
+
+def _trainability_stage(config: ProjectConfig) -> str:
+    if config.model.lora.enabled:
+        return "B2"
+    if config.model.head.type == "cosine" or config.model.head.prototype_init.enabled:
+        return "B1"
+    return "B0"
+
+
+def _set_loader_epoch(loader: Iterable[Batch], epoch: int) -> None:
+    for component in (getattr(loader, "sampler", None), getattr(loader, "dataset", None)):
+        set_epoch = getattr(component, "set_epoch", None)
+        if callable(set_epoch):
+            set_epoch(epoch)
+
+
+def _best_checkpoint_name(metric_name: str) -> str:
+    leaf = metric_name.rsplit("/", 1)[-1]
+    safe = "".join(
+        character if character.isalnum() or character == "_" else "_" for character in leaf
+    )
+    return f"best_{safe}.pt"

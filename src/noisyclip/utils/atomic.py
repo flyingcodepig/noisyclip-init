@@ -129,6 +129,31 @@ def atomic_save_with_writer(
     return output_path, result
 
 
+def atomic_copy_file(
+    source: Path | str,
+    destination: Path | str,
+    *,
+    overwrite: bool = True,
+    minimum_free_bytes: int = 0,
+) -> Path:
+    """Copy one existing file through fsync and atomic replacement."""
+
+    source_path = Path(source)
+    if not source_path.is_file():
+        raise FileNotFoundError(f"Source file does not exist: {source_path}")
+
+    def _writer(tmp_path: Path) -> None:
+        shutil.copyfile(source_path, tmp_path)
+
+    final_path, _ = atomic_save_with_writer(
+        destination,
+        _writer,
+        overwrite=overwrite,
+        minimum_free_bytes=max(minimum_free_bytes, source_path.stat().st_size),
+    )
+    return final_path
+
+
 def _temporary_path(destination: Path) -> Path:
     return destination.with_name(f".{destination.name}.tmp")
 

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
 import torch
 from test_two_batch_train import tiny_components
@@ -64,6 +66,20 @@ def test_trainable_parameter_guards_detect_unauthorized_backbone(tmp_path) -> No
         parameter.requires_grad = True
     with pytest.raises(TrainingPreflightError, match="Unauthorized trainable"):
         Trainer(config=config, components=components, device="cpu").preflight()
+
+
+def test_corrupt_committed_sample_state_is_not_silently_reset(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """A malformed prior state must fail instead of reverting to default trust."""
+
+    config, components = tiny_components(tmp_path)
+    manifest = components.artifact_store.sample_state_dir() / "manifest.json"
+    manifest.write_text(
+        json.dumps({"version": 1, "epoch": 0, "state_file": "missing.json"}),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(TrainingFailedError, match="unsafe or inconsistent"):
+        Trainer(config=config, components=components, device="cpu").fit()
 
 
 class _NanLoss:

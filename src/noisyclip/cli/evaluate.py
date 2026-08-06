@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from collections.abc import Sequence
 from pathlib import Path
 
-from noisyclip.engine.checkpoint import CHECKPOINT_FORMAT_VERSION
+from noisyclip.engine.assembly import AssemblyError, evaluate_checkpoint
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -19,7 +20,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--checkpoint",
         type=Path,
         default=None,
-        help="Checkpoint path; defaults to <run-dir>/checkpoints/last.pt.",
+        help="Checkpoint path; defaults to <run-dir>/checkpoints/best_top1.pt.",
     )
     return parser
 
@@ -37,20 +38,24 @@ def main(argv: Sequence[str] | None = None) -> int:
     """
 
     args = build_parser().parse_args(argv)
-    checkpoint = args.checkpoint or args.run_dir / "checkpoints" / "last.pt"
+    checkpoint = args.checkpoint or args.run_dir / "checkpoints" / "best_top1.pt"
     try:
         _validate_evaluation_inputs(args.run_dir, checkpoint)
-    except ValueError as exc:
-        sys.stderr.write(f"CONFIG_INVALID: {exc}\n")
-        return 2
+        result = evaluate_checkpoint(args.run_dir, checkpoint)
+    except AssemblyError as exc:
+        sys.stderr.write(f"DATA_OR_COMPLIANCE_INVALID: {exc}\n")
+        return 3
     except (FileNotFoundError, OSError) as exc:
         sys.stderr.write(f"DATA_OR_COMPLIANCE_INVALID: {exc}\n")
         return 3
-    sys.stderr.write(
-        "EVALUATION_ASSEMBLY_REQUIRED: load the checkpointed model and call "
-        "noisyclip.engine.evaluator.Evaluator on the fixed val manifest.\n"
-    )
-    return 4
+    except ValueError as exc:
+        sys.stderr.write(f"CONFIG_INVALID: {exc}\n")
+        return 2
+    except RuntimeError as exc:
+        sys.stderr.write(f"EVALUATION_FAILED: {exc}\n")
+        return 4
+    sys.stdout.write(json.dumps(result.metrics, indent=2, sort_keys=True) + "\n")
+    return 0
 
 
 def _validate_evaluation_inputs(run_dir: Path, checkpoint: Path) -> None:
@@ -70,10 +75,8 @@ def _validate_evaluation_inputs(run_dir: Path, checkpoint: Path) -> None:
         raise FileNotFoundError(f"run directory does not exist: {run_dir}")
     if not checkpoint.is_file():
         raise FileNotFoundError(f"checkpoint does not exist: {checkpoint}")
-    normalized = checkpoint.as_posix().lower()
-    if "test" in normalized:
+    if checkpoint.stem.lower().startswith("test"):
         raise ValueError("evaluation checkpoint path must not be selected from test data.")
-    _ = CHECKPOINT_FORMAT_VERSION
 
 
 if __name__ == "__main__":

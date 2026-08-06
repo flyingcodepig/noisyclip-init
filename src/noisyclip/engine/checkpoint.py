@@ -35,6 +35,9 @@ class CheckpointMetadata:
     sample_state_epoch: int | None
     config_digest: str | None = None
     data_digest: str | None = None
+    best_metric: float | None = None
+    early_best_metric: float | None = None
+    epochs_without_improvement: int = 0
 
     def __post_init__(self) -> None:
         """Validate non-negative epoch and step fields."""
@@ -45,6 +48,8 @@ class CheckpointMetadata:
             raise ValueError("checkpoint global_step must be non-negative.")
         if self.sample_state_epoch is not None and self.sample_state_epoch < 0:
             raise ValueError("sample_state_epoch must be non-negative or None.")
+        if self.epochs_without_improvement < 0:
+            raise ValueError("epochs_without_improvement must be non-negative.")
 
 
 def save_checkpoint(
@@ -89,6 +94,9 @@ def save_checkpoint(
         "sample_state_epoch": metadata.sample_state_epoch,
         "config_digest": metadata.config_digest,
         "data_digest": metadata.data_digest,
+        "best_metric": metadata.best_metric,
+        "early_best_metric": metadata.early_best_metric,
+        "epochs_without_improvement": metadata.epochs_without_improvement,
         "rng": capture_rng_state().state_dict(),
         "loss_state": dict(loss_state or {}),
     }
@@ -167,4 +175,15 @@ def load_checkpoint(
             None if payload.get("config_digest") is None else str(payload.get("config_digest"))
         ),
         data_digest=None if payload.get("data_digest") is None else str(payload.get("data_digest")),
+        best_metric=_optional_float(payload.get("best_metric")),
+        early_best_metric=_optional_float(payload.get("early_best_metric")),
+        epochs_without_improvement=int(payload.get("epochs_without_improvement", 0)),
     )
+
+
+def _optional_float(value: object) -> float | None:
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        raise ValueError("Checkpoint metric state must be numeric or None.")
+    return float(value)
