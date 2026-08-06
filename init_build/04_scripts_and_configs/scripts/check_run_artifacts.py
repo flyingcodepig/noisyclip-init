@@ -4,7 +4,6 @@ import argparse
 import json
 from pathlib import Path
 
-
 REQUIRED_FILES = [
     "resolved_config.yaml",
     "manifest.json",
@@ -29,7 +28,9 @@ def main() -> int:
     empty = [
         relative
         for relative in REQUIRED_FILES
-        if (run_dir / relative).is_file() and (run_dir / relative).stat().st_size == 0 and relative != "DONE"
+        if (run_dir / relative).is_file()
+        and (run_dir / relative).stat().st_size == 0
+        and relative != "DONE"
     ]
     if missing or empty:
         print(json.dumps({"status": "invalid", "missing": missing, "empty": empty}, indent=2))
@@ -37,7 +38,11 @@ def main() -> int:
 
     manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
     if manifest.get("status") != "completed":
-        print(json.dumps({"status": "invalid", "reason": "manifest status is not completed"}, indent=2))
+        print(
+            json.dumps(
+                {"status": "invalid", "reason": "manifest status is not completed"}, indent=2
+            )
+        )
         return 5
     print(json.dumps({"status": "ok", "run_id": run_dir.name}, indent=2))
     return 0
@@ -45,4 +50,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

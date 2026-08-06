@@ -6,7 +6,6 @@ from pathlib import Path
 from typing import Any
 
 import jsonschema
-
 from config_tools import ConfigError, config_digest, load_config
 
 
@@ -69,8 +68,10 @@ def main() -> int:
     args = parser.parse_args()
 
     script_dir = Path(__file__).resolve().parent
-    schema_path = Path(args.schema).resolve() if args.schema else (
-        script_dir.parent / "configs" / "schema" / "experiment.schema.json"
+    schema_path = (
+        Path(args.schema).resolve()
+        if args.schema
+        else (script_dir.parent / "configs" / "schema" / "experiment.schema.json")
     )
     try:
         config = load_config(args.config, strict_env=args.require_env)
@@ -89,4 +90,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

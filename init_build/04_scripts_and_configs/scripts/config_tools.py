@@ -91,4 +91,3 @@ def flatten(value: Any, prefix: str = "") -> dict[str, Any]:
     else:
         result[prefix] = value
     return result
-

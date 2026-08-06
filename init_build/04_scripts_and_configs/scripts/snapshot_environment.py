@@ -22,7 +22,9 @@ def main() -> int:
         raise FileExistsError(f"refusing to overwrite environment snapshot: {output}")
     output.mkdir(parents=True)
 
-    (output / "pip_freeze.txt").write_text(capture([sys.executable, "-m", "pip", "freeze"]), encoding="utf-8")
+    (output / "pip_freeze.txt").write_text(
+        capture([sys.executable, "-m", "pip", "freeze"]), encoding="utf-8"
+    )
     (output / "nvidia_smi.txt").write_text(capture(["nvidia-smi"]), encoding="utf-8")
     (output / "git_state.txt").write_text(
         capture(["git", "status", "--short"]) + "\n" + capture(["git", "rev-parse", "HEAD"]),
@@ -39,4 +41,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

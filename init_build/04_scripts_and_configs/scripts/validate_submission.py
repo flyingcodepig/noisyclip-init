@@ -10,13 +10,21 @@ from pathlib import Path
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--csv", required=True)
-    parser.add_argument("--test-list", required=True, help="UTF-8 text file, one exact filename per line")
-    parser.add_argument("--class-map", required=True, help="JSON mapping class_id to internal index")
+    parser.add_argument(
+        "--test-list", required=True, help="UTF-8 text file, one exact filename per line"
+    )
+    parser.add_argument(
+        "--class-map", required=True, help="JSON mapping class_id to internal index"
+    )
     parser.add_argument("--header", choices=["yes", "no"], default="no")
     args = parser.parse_args()
 
     csv_path = Path(args.csv).resolve()
-    test_names = [line.rstrip("\r\n") for line in Path(args.test_list).read_text(encoding="utf-8").splitlines() if line]
+    test_names = [
+        line.rstrip("\r\n")
+        for line in Path(args.test_list).read_text(encoding="utf-8").splitlines()
+        if line
+    ]
     class_map = json.loads(Path(args.class_map).read_text(encoding="utf-8"))
     allowed_classes = set(class_map)
     class_pattern = re.compile(r"^[0-9]{4}$")
@@ -52,10 +60,11 @@ def main() -> int:
     if len(rows) != len(test_names):
         raise ValueError(f"row count mismatch: expected {len(test_names)}, got {len(rows)}")
 
-    print(json.dumps({"status": "ok", "rows": len(rows), "classes": len(allowed_classes)}, indent=2))
+    print(
+        json.dumps({"status": "ok", "rows": len(rows), "classes": len(allowed_classes)}, indent=2)
+    )
     return 0
 
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

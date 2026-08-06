@@ -6,6 +6,8 @@ __pycache__/
 .ruff_cache/
 .coverage
 htmlcov/
+*.egg-info/
+.tmp_pytest/
 
 # Local Python environments
 .venv/
@@ -21,13 +23,14 @@ env/
 credentials*
 secrets*
 
-# Competition data
-data/
-dataset/
-datasets/
-初赛数据集/
-train/
-test/
+# Competition data at repository root. Leading slashes are essential: the
+# package source directory src/noisyclip/data/ must remain tracked.
+/data/
+/dataset/
+/datasets/
+/初赛数据集/
+/train/
+/test/
 
 # Models and experiment outputs
 runs/

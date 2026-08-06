@@ -33,6 +33,7 @@ testpaths = ["tests"]
 [tool.ruff]
 line-length = 100
 target-version = "py311"
+extend-exclude = [".tmp_pytest", ".pytest_tmp", "初赛数据集", "tmp"]
 
 [tool.ruff.lint]
 select = ["B", "E", "F", "I", "UP"]
