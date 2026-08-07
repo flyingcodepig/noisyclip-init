@@ -32,6 +32,4 @@ python "${script_dir}/preflight.py" --config "${config}"
 echo "Starting run ${run_id} on physical GPU ${physical_gpu}."
 python -m noisyclip.cli.train \
   --config "${config}" \
-  --run-id "${run_id}" \
-  --device cuda:0
-
+  --run-id "${run_id}"
