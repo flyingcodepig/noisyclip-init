@@ -14,9 +14,9 @@ from torch import nn
 
 ALLOWED_MODEL_NAME = "ViT-B/32"
 ALLOWED_PRETRAINED = frozenset({"openai", "openai_clip_official"})
+OPENAI_VIT_B32_SHA256 = "40d365715913c9da98579312b702a82c18be219cc2a73407c4526f58eba950af"
 OPENAI_VIT_B32_URL = (
-    "https://openaipublic.azureedge.net/clip/models/"
-    "40d365715913c593ad26cfc7fde1d38e882b06f7/ViT-B-32.pt"
+    f"https://openaipublic.azureedge.net/clip/models/{OPENAI_VIT_B32_SHA256}/ViT-B-32.pt"
 )
 
 
@@ -200,6 +200,14 @@ def load_clip_vit_b32(
                 f"file during server bootstrap and place it at {resolved_weight_path}; runtime "
                 "model loading is offline-only."
             )
+    sha256 = _sha256_file(resolved_weight_path) if resolved_weight_path is not None else None
+    if isinstance(selected_backend, OfficialClipBackend) and sha256 != OPENAI_VIT_B32_SHA256:
+        raise RuntimeError(
+            "Official OpenAI CLIP ViT-B/32 weight SHA256 mismatch: "
+            f"expected {OPENAI_VIT_B32_SHA256}, got {sha256}. "
+            "Replace the cached file with the verified official weight before retrying."
+        )
+
     cache_root = str(cache_path)
     model, preprocess = selected_backend.load(
         model_name,
@@ -207,7 +215,6 @@ def load_clip_vit_b32(
         jit=jit,
         download_root=cache_root,
     )
-    sha256 = _sha256_file(resolved_weight_path) if resolved_weight_path is not None else None
     metadata = ClipWeightMetadata(
         model_name=model_name,
         source=pretrained,

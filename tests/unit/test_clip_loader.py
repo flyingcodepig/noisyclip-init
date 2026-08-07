@@ -10,7 +10,12 @@ import pytest
 import torch
 from torch import nn
 
-from noisyclip.models.clip_loader import OfficialClipBackend, load_clip_vit_b32
+from noisyclip.models.clip_loader import (
+    OPENAI_VIT_B32_SHA256,
+    OPENAI_VIT_B32_URL,
+    OfficialClipBackend,
+    load_clip_vit_b32,
+)
 
 
 class TinyClip(nn.Module):
@@ -75,6 +80,26 @@ def test_loader_uses_injected_backend_and_hashes_weight_file(tmp_path: Path) -> 
     assert loaded.metadata.source == "openai"
     assert loaded.metadata.sha256 == hashlib.sha256(b"fake weight bytes").hexdigest()
     assert loaded.metadata.file_path == str(weight_path.resolve())
+
+
+def test_official_download_url_embeds_the_verified_weight_sha256() -> None:
+    """The auditable source URL cannot drift away from the official checksum."""
+
+    assert OPENAI_VIT_B32_URL == (
+        f"https://openaipublic.azureedge.net/clip/models/{OPENAI_VIT_B32_SHA256}/ViT-B-32.pt"
+    )
+
+
+def test_official_backend_rejects_a_cached_weight_with_wrong_sha256(tmp_path: Path) -> None:
+    """Real loading fails before backend use when the cached file is unverified."""
+
+    weight_path = tmp_path / "ViT-B-32.pt"
+    weight_path.write_bytes(b"not the official weight")
+    backend = object.__new__(OfficialClipBackend)
+    backend.package_version = "test"
+
+    with pytest.raises(RuntimeError, match="weight SHA256 mismatch"):
+        load_clip_vit_b32(backend=backend, weight_path=weight_path)
 
 
 def test_missing_weight_path_fails_clearly(tmp_path: Path) -> None:
