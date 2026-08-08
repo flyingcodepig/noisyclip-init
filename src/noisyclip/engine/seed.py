@@ -121,8 +121,9 @@ def set_seed(seed: int, *, deterministic: bool = False) -> None:
 
     Args:
         seed: Non-negative integer seed.
-        deterministic: Enables deterministic PyTorch algorithms and disables
-            CUDNN benchmarking when true.
+        deterministic: Strictly enables deterministic PyTorch algorithms and
+            disables CUDNN benchmarking when true. Unsupported nondeterministic
+            operations fail instead of emitting warnings.
 
     Raises:
         ValueError: If seed is negative.
@@ -135,7 +136,7 @@ def set_seed(seed: int, *, deterministic: bool = False) -> None:
     torch.manual_seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
-    torch.use_deterministic_algorithms(deterministic, warn_only=True)
+    torch.use_deterministic_algorithms(deterministic, warn_only=False)
     if hasattr(torch.backends, "cudnn"):
         torch.backends.cudnn.benchmark = not deterministic
         torch.backends.cudnn.deterministic = deterministic
@@ -174,4 +175,4 @@ def restore_rng_state(snapshot: RngSnapshot | Mapping[str, object]) -> None:
     torch.random.set_rng_state(state.torch_cpu_state)
     if torch.cuda.is_available() and state.torch_cuda_states:
         torch.cuda.set_rng_state_all(state.torch_cuda_states)
-    torch.use_deterministic_algorithms(state.deterministic_algorithms, warn_only=True)
+    torch.use_deterministic_algorithms(state.deterministic_algorithms, warn_only=False)
