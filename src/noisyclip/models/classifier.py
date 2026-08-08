@@ -9,6 +9,7 @@ from torch import Tensor, nn
 from torch.nn import functional as F
 
 from noisyclip.models.validation import require_embedding_batch
+from noisyclip.utils.runtime_checks import value_checks_enabled
 
 
 class LinearClassifierHead(nn.Module):
@@ -183,5 +184,5 @@ def _validate_temperature_bounds(
 def _validate_logits(logits: Tensor, *, num_classes: int) -> None:
     if logits.ndim != 2 or logits.shape[1] != num_classes:
         raise ValueError(f"logits must have shape [B, {num_classes}], got {tuple(logits.shape)}.")
-    if not torch.isfinite(logits).all():
+    if value_checks_enabled() and not torch.isfinite(logits).all():
         raise ValueError("logits contain NaN or Inf values.")

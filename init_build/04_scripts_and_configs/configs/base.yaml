@@ -27,6 +27,8 @@ data:
   allow_truncated_images: true
   unreadable_policy: fail_audit
   hash_files: true
+  decode_backend: torchvision_fallback
+  normalize_on_device: true
   train_transform:
     random_resized_crop_scale: [0.75, 1.0]
     horizontal_flip_probability: 0.5
@@ -126,6 +128,13 @@ trainer:
   gradient_accumulation_steps: 1
   num_workers: 8
   pin_memory: true
+  prefetch_factor: 4
+  persistent_workers: true
+  runtime_tensor_checks: boundary
+  frozen_feature_cache:
+    enabled: false
+    directory: null
+    verify_hashes: true
   optimizer:
     name: adamw
     head_lr: 0.001
@@ -170,4 +179,3 @@ submission:
   include_header: false
   expected_columns: [filename, class_id]
   class_id_regex: "^[0-9]{4}$"
-

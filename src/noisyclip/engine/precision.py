@@ -116,11 +116,17 @@ class PrecisionManager:
         for parameter in model.parameters():
             if parameter.grad is not None:
                 parameter.grad.div_(self._pending_microbatches)
-        check_gradients_finite(model.parameters())
         if gradient_validator is not None:
             gradient_validator()
-        torch.nn.utils.clip_grad_norm_(model.parameters(), self.config.gradient_clip_norm)
-        check_gradients_finite(model.parameters())
+        try:
+            torch.nn.utils.clip_grad_norm_(
+                model.parameters(),
+                self.config.gradient_clip_norm,
+                error_if_nonfinite=True,
+                foreach=True,
+            )
+        except RuntimeError as exc:
+            raise NonFiniteTrainingError("Gradient contains NaN or Inf values.") from exc
         self.scaler.step(optimizer)
         self.scaler.update()
         optimizer.zero_grad(set_to_none=True)

@@ -8,6 +8,7 @@ from typing import Literal
 
 import torch
 from torch import Tensor
+from torch.nn import functional as torch_functional
 
 from noisyclip.config.schema import DataConfig
 
@@ -52,6 +53,7 @@ class ClipImageTransform:
     color_jitter_strength: float = 0.1
     seed: int | None = None
     epoch: int = 0
+    normalize: bool = True
 
     def __post_init__(self) -> None:
         """Validate transform ranges before any image is processed.
@@ -75,7 +77,7 @@ class ClipImageTransform:
         if self.color_jitter_strength < 0.0:
             raise ValueError("color_jitter_strength must be non-negative.")
 
-    def __call__(self, image: Image.Image, *, sample_id: str | None = None) -> Tensor:
+    def __call__(self, image: Image.Image | Tensor, *, sample_id: str | None = None) -> Tensor:
         """Apply the transform and return a normalized tensor.
 
         Args:
@@ -92,7 +94,9 @@ class ClipImageTransform:
                 non-finite values.
         """
 
-        rgb = image.convert("RGB")
+        if isinstance(image, Tensor):
+            return self._transform_tensor(image, sample_id=sample_id)
+        rgb = image if image.mode == "RGB" else image.convert("RGB")
         rng = self._rng(sample_id)
         if self.mode == "eval":
             transformed = _resize_short_side(rgb, self.resize_short_side)
@@ -106,9 +110,31 @@ class ClipImageTransform:
             if self.color_jitter_strength > 0.0:
                 transformed = _jitter_color(transformed, self.color_jitter_strength, rng)
 
-        tensor = _pil_to_normalized_tensor(transformed)
-        _validate_tensor(tensor)
+        tensor = _pil_to_tensor(transformed)
+        if self.normalize:
+            tensor = normalize_clip_tensor(tensor)
+        _validate_tensor(tensor, normalized=self.normalize)
         return tensor
+
+    def _transform_tensor(self, image: Tensor, *, sample_id: str | None) -> Tensor:
+        if image.dtype != torch.uint8 or image.ndim != 3 or image.shape[0] != 3:
+            raise ValueError("Decoded tensor must be uint8 with shape [3, H, W].")
+        rng = self._rng(sample_id)
+        if self.mode == "eval":
+            transformed = _resize_short_side_tensor(image, self.resize_short_side)
+            transformed = _center_crop_tensor(transformed, self.image_size)
+        else:
+            transformed = _random_resized_crop_tensor(
+                image, self.image_size, self.random_resized_crop_scale, rng
+            )
+            if rng.random() < self.horizontal_flip_probability:
+                transformed = transformed.flip(-1)
+            if self.color_jitter_strength > 0.0:
+                transformed = _jitter_color_tensor(transformed, self.color_jitter_strength, rng)
+        transformed = transformed.contiguous()
+        output = normalize_clip_tensor(transformed) if self.normalize else transformed
+        _validate_tensor(output, normalized=self.normalize)
+        return output
 
     def _rng(self, sample_id: str | None) -> random.Random:
         if self.seed is None or sample_id is None:
@@ -129,6 +155,7 @@ def build_transform(
     split: Literal["train", "val", "test"],
     strong: bool = False,
     seed: int | None = None,
+    normalize: bool | None = None,
 ) -> ClipImageTransform:
     """Build the configured transform for train, validation, or test records.
 
@@ -148,12 +175,14 @@ def build_transform(
             if `split` is illegal.
     """
 
+    should_normalize = True if normalize is None else normalize
     if split in {"val", "test"}:
         return ClipImageTransform(
             mode="eval",
             image_size=data_config.image_size,
             resize_short_side=data_config.eval_transform.resize_short_side,
             seed=seed,
+            normalize=should_normalize,
         )
     if split != "train":
         raise ValueError(f"Illegal split for transform: {split}")
@@ -168,6 +197,7 @@ def build_transform(
             random_resized_crop_scale=data_config.strong_transform.random_resized_crop_scale,
             color_jitter_strength=float(data_config.strong_transform.randaugment_magnitude) / 100.0,
             seed=seed,
+            normalize=should_normalize,
         )
     return ClipImageTransform(
         mode="train_weak",
@@ -176,6 +206,7 @@ def build_transform(
         horizontal_flip_probability=data_config.train_transform.horizontal_flip_probability,
         color_jitter_strength=data_config.train_transform.color_jitter_strength,
         seed=seed,
+        normalize=should_normalize,
     )
 
 
@@ -217,20 +248,78 @@ def _jitter_color(image: Image.Image, strength: float, rng: random.Random) -> Im
     return ImageEnhance.Contrast(bright).enhance(contrast)
 
 
-def _pil_to_normalized_tensor(image: Image.Image) -> Tensor:
-    raw = torch.tensor(list(image.tobytes()), dtype=torch.uint8)
-    tensor = raw.view(image.height, image.width, 3).permute(2, 0, 1).to(torch.float32) / 255.0
+def _pil_to_tensor(image: Image.Image) -> Tensor:
+    raw = torch.frombuffer(bytearray(image.tobytes()), dtype=torch.uint8)
+    return raw.view(image.height, image.width, 3).permute(2, 0, 1).contiguous()
+
+
+def normalize_clip_tensor(tensor: Tensor) -> Tensor:
+    """Normalize one uint8 or floating CLIP image without Python pixel expansion."""
+
+    if tensor.dtype == torch.uint8:
+        tensor = tensor.to(torch.float32).div_(255.0)
+    else:
+        tensor = tensor.float()
     mean = torch.tensor(CLIP_IMAGE_MEAN, dtype=torch.float32).view(3, 1, 1)
     std = torch.tensor(CLIP_IMAGE_STD, dtype=torch.float32).view(3, 1, 1)
     return (tensor - mean) / std
 
 
-def _validate_tensor(tensor: Tensor) -> None:
+def _validate_tensor(tensor: Tensor, *, normalized: bool) -> None:
     if tensor.shape != (3, 224, 224):
         raise ValueError(
             f"Transform output must have shape [3, 224, 224], got {tuple(tensor.shape)}"
         )
-    if tensor.dtype != torch.float32:
-        raise ValueError(f"Transform output must be float32, got {tensor.dtype}")
-    if not torch.isfinite(tensor).all().item():
+    expected_dtype = torch.float32 if normalized else torch.uint8
+    if tensor.dtype != expected_dtype:
+        raise ValueError(f"Transform output must be {expected_dtype}, got {tensor.dtype}")
+    if tensor.is_floating_point() and not torch.isfinite(tensor).all().item():
         raise ValueError("Transform output contains NaN or Inf values.")
+
+
+def _resize_short_side_tensor(image: Tensor, short_side: int) -> Tensor:
+    height, width = image.shape[-2:]
+    scale = short_side / min(width, height)
+    return _resize_tensor(image, (round(height * scale), round(width * scale)))
+
+
+def _center_crop_tensor(image: Tensor, size: int) -> Tensor:
+    height, width = image.shape[-2:]
+    top = max(0, (height - size) // 2)
+    left = max(0, (width - size) // 2)
+    return image[:, top : top + size, left : left + size]
+
+
+def _random_resized_crop_tensor(
+    image: Tensor,
+    size: int,
+    scale_range: tuple[float, float],
+    rng: random.Random,
+) -> Tensor:
+    height, width = image.shape[-2:]
+    scale = rng.uniform(scale_range[0], scale_range[1])
+    crop_side = max(1, min(width, height, round(min(width, height) * scale)))
+    left = rng.randint(0, max(0, width - crop_side))
+    top = rng.randint(0, max(0, height - crop_side))
+    cropped = image[:, top : top + crop_side, left : left + crop_side]
+    return _resize_tensor(cropped, (size, size))
+
+
+def _resize_tensor(image: Tensor, size: tuple[int, int]) -> Tensor:
+    resized = torch_functional.interpolate(
+        image.unsqueeze(0).float(),
+        size=size,
+        mode="bicubic",
+        align_corners=False,
+        antialias=True,
+    ).squeeze(0)
+    return resized.round_().clamp_(0, 255).to(torch.uint8)
+
+
+def _jitter_color_tensor(image: Tensor, strength: float, rng: random.Random) -> Tensor:
+    brightness = 1.0 + rng.uniform(-strength, strength)
+    contrast = 1.0 + rng.uniform(-strength, strength)
+    value = image.float().mul_(brightness)
+    gray = value[0] * 0.299 + value[1] * 0.587 + value[2] * 0.114
+    value = value.mul(contrast).add_(gray.mean() * (1.0 - contrast))
+    return value.round_().clamp_(0, 255).to(torch.uint8)

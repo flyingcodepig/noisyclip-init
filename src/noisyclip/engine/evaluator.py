@@ -6,12 +6,13 @@ import csv
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol
+from typing import Literal, Protocol
 
 import torch
 from torch import Tensor
 
 from noisyclip.data.records import Batch
+from noisyclip.engine.device import BatchDeviceIterator
 from noisyclip.metrics.classification import (
     ClassificationMetrics,
     MetricValue,
@@ -19,6 +20,7 @@ from noisyclip.metrics.classification import (
 )
 from noisyclip.metrics.drift import feature_cosine_to_base
 from noisyclip.metrics.robustness import augmentation_agreement, trusted_subset_top1
+from noisyclip.utils.runtime_checks import tensor_value_checks, value_checks_enabled
 
 
 class EvaluatableModel(Protocol):
@@ -59,12 +61,14 @@ class Evaluator:
         model: EvaluatableModel,
         num_classes: int,
         device: torch.device | str = "cpu",
+        runtime_tensor_checks: Literal["full", "boundary"] = "full",
     ) -> None:
         if num_classes <= 0:
             raise ValueError("num_classes must be positive.")
         self.model = model
         self.num_classes = num_classes
         self.device = torch.device(device)
+        self.runtime_tensor_checks = runtime_tensor_checks
 
     @torch.inference_mode()
     def evaluate(
@@ -99,21 +103,24 @@ class Evaluator:
         base_parts: list[Tensor] = []
         saw_strong = True
 
-        for batch in loader:
+        for batch_index, batch in enumerate(BatchDeviceIterator(loader, self.device)):
             if batch.targets is None:
                 raise ValueError("Validation batch must include targets.")
-            output = self.model(batch.image_weak.to(self.device))
-            logits = _get_tensor_attr(output, "logits").detach().cpu()
-            embedding = _get_tensor_attr(output, "embedding").detach().cpu()
+            checks_enabled = self.runtime_tensor_checks == "full" or batch_index == 0
+            with tensor_value_checks(enabled=checks_enabled):
+                output = _evaluate_batch(self.model, batch, strong=False)
+                logits = _get_tensor_attr(output, "logits").detach()
+                embedding = _get_tensor_attr(output, "embedding").detach()
             logits_parts.append(logits)
-            targets_parts.append(batch.targets.detach().cpu())
+            targets_parts.append(batch.targets.detach())
             embeddings.append(embedding)
 
-            if batch.image_strong is None:
+            if batch.image_strong is None and batch.embedding_strong is None:
                 saw_strong = False
             else:
-                strong_output = self.model(batch.image_strong.to(self.device))
-                strong_logits_parts.append(_get_tensor_attr(strong_output, "logits").detach().cpu())
+                with tensor_value_checks(enabled=checks_enabled):
+                    strong_output = _evaluate_batch(self.model, batch, strong=True)
+                    strong_logits_parts.append(_get_tensor_attr(strong_output, "logits").detach())
 
             if trusted_ids is not None:
                 trusted_masks.append(
@@ -125,8 +132,8 @@ class Evaluator:
 
         if not logits_parts:
             raise ValueError("Validation loader produced no batches.")
-        logits_all = torch.cat(logits_parts, dim=0)
-        targets_all = torch.cat(targets_parts, dim=0)
+        logits_all = torch.cat(logits_parts, dim=0).cpu()
+        targets_all = torch.cat(targets_parts, dim=0).cpu()
         classification = compute_classification_metrics(
             logits_all,
             targets_all,
@@ -134,10 +141,12 @@ class Evaluator:
         )
         trusted_mask = torch.cat(trusted_masks, dim=0) if trusted_masks else None
         strong_logits = (
-            torch.cat(strong_logits_parts, dim=0) if saw_strong and strong_logits_parts else None
+            torch.cat(strong_logits_parts, dim=0).cpu()
+            if saw_strong and strong_logits_parts
+            else None
         )
         base_tensor = torch.stack(base_parts, dim=0) if base_parts else None
-        drift = feature_cosine_to_base(torch.cat(embeddings, dim=0), base_tensor)
+        drift = feature_cosine_to_base(torch.cat(embeddings, dim=0).cpu(), base_tensor)
         result_metrics = {
             "val/top1": classification.top1.value,
             "val/macro_accuracy": classification.macro_accuracy.value,
@@ -206,9 +215,22 @@ def _get_tensor_attr(output: object, name: str) -> Tensor:
     value = getattr(output, name, None)
     if not isinstance(value, Tensor):
         raise ValueError(f"model output {name!r} must be a torch.Tensor.")
-    if not torch.isfinite(value).all():
+    if value_checks_enabled() and not torch.isfinite(value).all():
         raise ValueError(f"model output {name!r} contains NaN or Inf.")
     return value
 
 
 MappingBySample = dict[str, Tensor]
+
+
+def _evaluate_batch(model: EvaluatableModel, batch: Batch, *, strong: bool) -> object:
+    embedding = batch.embedding_strong if strong else batch.embedding_weak
+    if embedding is not None:
+        forward_embeddings = getattr(model, "forward_embeddings", None)
+        if not callable(forward_embeddings):
+            raise ValueError("Cached feature batch requires model.forward_embeddings().")
+        return forward_embeddings(embedding)
+    images = batch.image_strong if strong else batch.image_weak
+    if images is None:
+        raise ValueError("Evaluation batch contains neither images nor embeddings.")
+    return model(images)

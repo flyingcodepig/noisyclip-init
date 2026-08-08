@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
+
+import torch
+from torch import Tensor
 
 try:
     from PIL import Image, ImageFile, UnidentifiedImageError
@@ -169,3 +173,33 @@ def load_rgb_image(path: Path | str) -> Image.Image:
             return image.convert("RGB")
     except (OSError, UnidentifiedImageError, ValueError) as exc:
         raise ImageAuditError(f"Could not load RGB image: {path}") from exc
+
+
+def load_rgb_tensor(path: Path | str) -> Tensor:
+    """Decode to contiguous uint8 ``[3, H, W]`` with a full-format fallback."""
+
+    try:
+        from torchvision.io import ImageReadMode, decode_image
+
+        tensor = decode_image(
+            str(Path(path)),
+            mode=ImageReadMode.RGB,
+            apply_exif_orientation=False,
+        )
+        if tensor.dtype != torch.uint8 or tensor.ndim != 3 or tensor.shape[0] != 3:
+            raise ValueError(f"Unexpected torchvision decode result: {tuple(tensor.shape)}")
+        return tensor.contiguous()
+    except (ImportError, OSError, RuntimeError, ValueError):
+        image = load_rgb_image(path)
+        raw = torch.frombuffer(bytearray(image.tobytes()), dtype=torch.uint8)
+        return raw.view(image.height, image.width, 3).permute(2, 0, 1).contiguous()
+
+
+def build_image_loader(backend: str) -> Callable[[Path | str], Any]:
+    """Return the configured decoder while retaining Pillow fallback coverage."""
+
+    if backend == "pillow":
+        return load_rgb_image
+    if backend == "torchvision_fallback":
+        return load_rgb_tensor
+    raise ValueError(f"Unsupported image decode backend: {backend!r}.")

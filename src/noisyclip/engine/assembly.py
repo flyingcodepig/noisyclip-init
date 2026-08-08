@@ -6,6 +6,7 @@ import copy
 import json
 import math
 import shutil
+from collections.abc import Iterable
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any, Literal
@@ -17,12 +18,21 @@ from torch.utils.data import DataLoader
 from noisyclip.config.loader import load_config, write_resolved_config
 from noisyclip.config.schema import ProjectConfig
 from noisyclip.data.dataset import ManifestImageDataset, collate_batch
+from noisyclip.data.feature_cache import (
+    FrozenFeatureLoader,
+    build_frozen_feature_cache,
+    feature_cache_signature,
+    load_feature_tensor,
+)
+from noisyclip.data.image_io import build_image_loader
 from noisyclip.data.leakage import check_root_boundaries
 from noisyclip.data.manifests import data_digest, read_manifest
+from noisyclip.data.records import Batch
 from noisyclip.data.sampler import build_sampler
 from noisyclip.data.transforms import build_transform
 from noisyclip.engine.checkpoint import load_checkpoint
 from noisyclip.engine.context import RunContext
+from noisyclip.engine.device import move_batch_to_device
 from noisyclip.engine.evaluator import EvaluationResult, Evaluator, save_evaluation_artifacts
 from noisyclip.engine.seed import set_seed
 from noisyclip.engine.trainer import Trainer, TrainerComponents, TrainResult
@@ -137,15 +147,47 @@ def assemble_trainer(
             backend=clip_backend,
         )
         model, teacher = _build_model(config, mapping, loaded.model, device)
-        train_loader, val_loader = _build_loaders(config, train_records, val_records, paths)
-        if config.model.head.prototype_init.enabled and resume_path is None:
-            _initialize_head_from_prototypes(
-                config,
-                model,
-                train_records,
-                paths["train_root"],
-                device,
+        train_loader: Iterable[Batch]
+        val_loader: Iterable[Batch]
+        if config.trainer.frozen_feature_cache.enabled:
+            feature_root = _concrete_path(
+                str(config.trainer.frozen_feature_cache.directory),
+                "trainer.frozen_feature_cache.directory",
             )
+            signature = feature_cache_signature(
+                config,
+                data_digest=digest,
+                class_mapping_digest=mapping.digest,
+                clip_weight_sha256=_clip_identity(loaded.metadata),
+            )
+            train_loader = FrozenFeatureLoader(
+                feature_root,
+                split="train",
+                batch_size=config.trainer.batch_size,
+                seed=config.experiment.seed,
+                expected_signature=signature,
+                verify_hashes=config.trainer.frozen_feature_cache.verify_hashes,
+            )
+            val_loader = FrozenFeatureLoader(
+                feature_root,
+                split="val",
+                batch_size=config.trainer.batch_size,
+                seed=config.experiment.seed,
+                expected_signature=signature,
+                verify_hashes=False,
+            )
+            if config.model.head.prototype_init.enabled and resume_path is None:
+                _initialize_head_from_feature_cache(config, model, feature_root, train_loader)
+        else:
+            train_loader, val_loader = _build_loaders(config, train_records, val_records, paths)
+            if config.model.head.prototype_init.enabled and resume_path is None:
+                _initialize_head_from_prototypes(
+                    config,
+                    model,
+                    train_records,
+                    paths["train_root"],
+                    device,
+                )
         optimizer = _build_optimizer(config, model)
         scheduler = _build_scheduler(config, optimizer, len(train_loader))
         loss = RobustCompositeLoss(config.loss)
@@ -221,21 +263,58 @@ def evaluate_checkpoint(
     metadata = load_checkpoint(checkpoint, model=model, map_location=device)
     if metadata.config_digest != config_digest or metadata.data_digest != digest:
         raise AssemblyError("Checkpoint identity does not match resolved config and fixed data.")
-    val_dataset = ManifestImageDataset(
-        val_records,
-        data_root=_concrete_path(config.paths.train_root, "paths.train_root"),
-        split="val",
-        image_weak_transform=build_transform(config.data, split="val"),
+    loader: Iterable[Batch]
+    if config.trainer.frozen_feature_cache.enabled:
+        feature_root = _concrete_path(
+            str(config.trainer.frozen_feature_cache.directory),
+            "trainer.frozen_feature_cache.directory",
+        )
+        signature = feature_cache_signature(
+            config,
+            data_digest=digest,
+            class_mapping_digest=mapping.digest,
+            clip_weight_sha256=_clip_identity(loaded.metadata),
+        )
+        loader = FrozenFeatureLoader(
+            feature_root,
+            split="val",
+            batch_size=config.trainer.batch_size,
+            seed=config.experiment.seed,
+            expected_signature=signature,
+            verify_hashes=config.trainer.frozen_feature_cache.verify_hashes,
+        )
+    else:
+        val_dataset = ManifestImageDataset(
+            val_records,
+            data_root=_concrete_path(config.paths.train_root, "paths.train_root"),
+            split="val",
+            image_weak_transform=build_transform(
+                config.data,
+                split="val",
+                normalize=not config.data.normalize_on_device,
+            ),
+            image_loader=build_image_loader(config.data.decode_backend),
+        )
+        loader = DataLoader(
+            val_dataset,
+            batch_size=config.trainer.batch_size,
+            shuffle=False,
+            num_workers=config.trainer.num_workers,
+            pin_memory=config.trainer.pin_memory and device.type == "cuda",
+            collate_fn=collate_batch,
+            prefetch_factor=(
+                config.trainer.prefetch_factor if config.trainer.num_workers > 0 else None
+            ),
+            persistent_workers=(
+                config.trainer.persistent_workers if config.trainer.num_workers > 0 else False
+            ),
+        )
+    evaluator = Evaluator(
+        model=model,
+        num_classes=mapping.num_classes,
+        device=device,
+        runtime_tensor_checks=config.trainer.runtime_tensor_checks,
     )
-    loader = DataLoader(
-        val_dataset,
-        batch_size=config.trainer.batch_size,
-        shuffle=False,
-        num_workers=config.trainer.num_workers,
-        pin_memory=config.trainer.pin_memory and device.type == "cuda",
-        collate_fn=collate_batch,
-    )
-    evaluator = Evaluator(model=model, num_classes=mapping.num_classes, device=device)
     result: EvaluationResult = evaluator.evaluate(loader)
     output_dir = root / "metrics" / f"evaluation_epoch_{metadata.epoch:04d}"
     save_evaluation_artifacts(result, output_dir)
@@ -244,6 +323,52 @@ def evaluate_checkpoint(
         (json.dumps(result.metrics, sort_keys=True, indent=2) + "\n").encode("utf-8"),
     )
     return result
+
+
+def build_feature_cache_from_config(
+    config_path: Path | str,
+    *,
+    clip_backend: ClipBackend | None = None,
+) -> Path:
+    """Build a required B0/B1 feature cache without creating a training run."""
+
+    config = load_config(config_path)
+    if not config.trainer.frozen_feature_cache.enabled:
+        raise AssemblyError(
+            "Feature-cache build requires trainer.frozen_feature_cache.enabled=true."
+        )
+    paths = _training_paths(config)
+    mapping = load_class_mapping(paths["class_mapping"])
+    train_records = read_manifest(paths["train_manifest"])
+    val_records = read_manifest(paths["val_manifest"])
+    _validate_fixed_splits(train_records, val_records, mapping)
+    digest = data_digest(train_records + val_records, dict(mapping.class_to_idx))
+    device = _resolve_device(config.trainer.device)
+    set_seed(config.experiment.seed, deterministic=config.trainer.deterministic)
+    loaded = load_clip_vit_b32(
+        model_name=config.model.backbone.name,
+        pretrained=config.model.backbone.pretrained,
+        device=device,
+        cache_dir=_concrete_path(config.paths.cache_root, "paths.cache_root"),
+        backend=clip_backend,
+    )
+    model, _ = _build_model(config, mapping, loaded.model, device, build_teacher=False)
+    destination = _concrete_path(
+        str(config.trainer.frozen_feature_cache.directory),
+        "trainer.frozen_feature_cache.directory",
+    )
+    return build_frozen_feature_cache(
+        destination,
+        config=config,
+        model=model,
+        train_records=train_records,
+        val_records=val_records,
+        train_root=paths["train_root"],
+        device=device,
+        data_digest=digest,
+        class_mapping_digest=mapping.digest,
+        clip_weight_sha256=_clip_identity(loaded.metadata),
+    )
 
 
 def _training_paths(config: ProjectConfig) -> dict[str, Path]:
@@ -347,20 +472,33 @@ def _build_loaders(
         data_root=paths["train_root"],
         split="train",
         image_weak_transform=build_transform(
-            config.data, split="train", seed=config.experiment.seed
+            config.data,
+            split="train",
+            seed=config.experiment.seed,
+            normalize=not config.data.normalize_on_device,
         ),
         image_strong_transform=(
-            build_transform(config.data, split="train", strong=True, seed=config.experiment.seed)
+            build_transform(
+                config.data,
+                split="train",
+                strong=True,
+                seed=config.experiment.seed,
+                normalize=not config.data.normalize_on_device,
+            )
             if config.data.strong_transform.enabled
             else None
         ),
         training=True,
+        image_loader=build_image_loader(config.data.decode_backend),
     )
     val_dataset = ManifestImageDataset(
         val_records,
         data_root=paths["train_root"],
         split="val",
-        image_weak_transform=build_transform(config.data, split="val"),
+        image_weak_transform=build_transform(
+            config.data, split="val", normalize=not config.data.normalize_on_device
+        ),
+        image_loader=build_image_loader(config.data.decode_backend),
     )
     train_loader = DataLoader(
         train_dataset,
@@ -369,6 +507,12 @@ def _build_loaders(
         num_workers=config.trainer.num_workers,
         pin_memory=config.trainer.pin_memory and config.trainer.device.startswith("cuda"),
         collate_fn=collate_batch,
+        prefetch_factor=(
+            config.trainer.prefetch_factor if config.trainer.num_workers > 0 else None
+        ),
+        persistent_workers=(
+            config.trainer.persistent_workers if config.trainer.num_workers > 0 else False
+        ),
     )
     val_loader = DataLoader(
         val_dataset,
@@ -377,6 +521,12 @@ def _build_loaders(
         num_workers=config.trainer.num_workers,
         pin_memory=config.trainer.pin_memory and config.trainer.device.startswith("cuda"),
         collate_fn=collate_batch,
+        prefetch_factor=(
+            config.trainer.prefetch_factor if config.trainer.num_workers > 0 else None
+        ),
+        persistent_workers=(
+            config.trainer.persistent_workers if config.trainer.num_workers > 0 else False
+        ),
     )
     return train_loader, val_loader
 
@@ -396,7 +546,10 @@ def _initialize_head_from_prototypes(
         train_records,
         data_root=train_root,
         split="train",
-        image_weak_transform=build_transform(config.data, split="val"),
+        image_weak_transform=build_transform(
+            config.data, split="val", normalize=not config.data.normalize_on_device
+        ),
+        image_loader=build_image_loader(config.data.decode_backend),
     )
     loader = DataLoader(
         dataset,
@@ -404,6 +557,13 @@ def _initialize_head_from_prototypes(
         shuffle=False,
         num_workers=config.trainer.num_workers,
         collate_fn=collate_batch,
+        pin_memory=config.trainer.pin_memory and config.trainer.device.startswith("cuda"),
+        prefetch_factor=(
+            config.trainer.prefetch_factor if config.trainer.num_workers > 0 else None
+        ),
+        persistent_workers=(
+            config.trainer.persistent_workers if config.trainer.num_workers > 0 else False
+        ),
     )
     embeddings: list[Tensor] = []
     targets: list[Tensor] = []
@@ -411,8 +571,11 @@ def _initialize_head_from_prototypes(
     for batch in loader:
         if batch.targets is None:
             raise AssemblyError("Prototype initialization requires labeled training data.")
-        embeddings.append(model.backbone.encode_image(batch.image_weak.to(device)).cpu())
-        targets.append(batch.targets)
+        batch = move_batch_to_device(batch, device, non_blocking=True)
+        if batch.image_weak is None or batch.targets is None:
+            raise AssemblyError("Prototype initialization lost images or labeled targets.")
+        embeddings.append(model.backbone.encode_image(batch.image_weak).cpu())
+        targets.append(batch.targets.cpu())
     prototypes = build_prototype_builder(
         method,
         keep_fraction=config.model.head.prototype_init.keep_fraction,
@@ -422,6 +585,29 @@ def _initialize_head_from_prototypes(
         None,
         config.data.expected_num_classes,
     )
+    _copy_prototypes_to_head(model, prototypes)
+
+
+@torch.inference_mode()
+def _initialize_head_from_feature_cache(
+    config: ProjectConfig,
+    model: NoisyCLIPStudent,
+    feature_root: Path,
+    loader: FrozenFeatureLoader,
+) -> None:
+    features = load_feature_tensor(feature_root / "train_eval.pt")
+    targets = torch.tensor(loader.metadata["train_targets"], dtype=torch.int64)
+    method = config.model.head.prototype_init.method
+    if method == "multi_prototype":
+        raise AssemblyError("Multi-prototype cache initialization is not supported.")
+    prototypes = build_prototype_builder(
+        method,
+        keep_fraction=config.model.head.prototype_init.keep_fraction,
+    ).fit(features, targets, None, config.data.expected_num_classes)
+    _copy_prototypes_to_head(model, prototypes)
+
+
+def _copy_prototypes_to_head(model: NoisyCLIPStudent, prototypes: Tensor) -> None:
     if hasattr(model.head, "weight"):
         model.head.weight.copy_(prototypes.to(model.head.weight.device))
     elif hasattr(model.head, "linear"):
@@ -429,6 +615,13 @@ def _initialize_head_from_prototypes(
         model.head.linear.bias.zero_()
     else:  # pragma: no cover - protected by configured head allowlist.
         raise AssemblyError("Configured classifier head cannot accept prototype weights.")
+
+
+def _clip_identity(metadata: Any) -> str:
+    sha256 = getattr(metadata, "sha256", None)
+    if isinstance(sha256, str) and sha256:
+        return sha256
+    return stable_hash(asdict(metadata))
 
 
 def _build_optimizer(config: ProjectConfig, model: nn.Module) -> torch.optim.Optimizer:

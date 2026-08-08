@@ -14,7 +14,12 @@ from noisyclip.config.schema import ProjectConfig
 from noisyclip.data.catalog import build_class_catalog, write_class_mapping
 from noisyclip.data.manifests import make_sample_id, write_manifest
 from noisyclip.data.records import SampleRecord
-from noisyclip.engine.assembly import assemble_trainer, evaluate_checkpoint, run_training
+from noisyclip.engine.assembly import (
+    assemble_trainer,
+    build_feature_cache_from_config,
+    evaluate_checkpoint,
+    run_training,
+)
 from noisyclip.models.export import load_export_package
 
 
@@ -62,7 +67,9 @@ class FakeBackend:
         return TinyOfficialClip().to(device), None
 
 
-def _fixture_config(tmp_path: Path, *, stage: str) -> tuple[Path, ProjectConfig]:
+def _fixture_config(
+    tmp_path: Path, *, stage: str, feature_cache: bool = False
+) -> tuple[Path, ProjectConfig]:
     train_root = tmp_path / "train"
     test_root = tmp_path / "test"
     run_root = tmp_path / "runs"
@@ -133,6 +140,10 @@ def _fixture_config(tmp_path: Path, *, stage: str) -> tuple[Path, ProjectConfig]
                 "batch_size": 3,
                 "num_workers": 0,
                 "early_stopping": {"enabled": False},
+                "frozen_feature_cache": {
+                    "enabled": feature_cache,
+                    "directory": str(tmp_path / "features") if feature_cache else None,
+                },
             },
             "evaluation": {},
             "tracking": {
@@ -186,3 +197,31 @@ def test_b0_b1_b2_configs_all_assemble_with_expected_trainability(tmp_path: Path
         ]
         assert any(name.startswith("head.") for name in trainable)
         assert any(".lora_" in f".{name}" for name in trainable) is (stage == "B2")
+
+
+def test_b0_and_b1_consume_provenance_bound_frozen_features(tmp_path: Path) -> None:
+    """The cache builder feeds complete B0/B1 runs without image batches."""
+
+    for stage in ("B0", "B1"):
+        stage_root = tmp_path / stage.lower()
+        config_path, _ = _fixture_config(stage_root, stage=stage, feature_cache=True)
+        cache_root = build_feature_cache_from_config(config_path, clip_backend=FakeBackend())
+
+        assert (cache_root / "metadata.json").is_file()
+        assert (cache_root / "train_epoch_0000.pt").is_file()
+        assert (cache_root / "train_eval.pt").is_file()
+        assert (cache_root / "val.pt").is_file()
+
+        result = run_training(
+            config_path,
+            run_id=f"{stage.lower()}-cached-run",
+            clip_backend=FakeBackend(),
+        )
+        assert result.epochs_completed == 1
+        assert result.global_step == 2
+        evaluated = evaluate_checkpoint(
+            stage_root / "runs" / f"{stage.lower()}-cached-run",
+            result.last_checkpoint,
+            clip_backend=FakeBackend(),
+        )
+        assert evaluated.metrics["val/top1"] is not None

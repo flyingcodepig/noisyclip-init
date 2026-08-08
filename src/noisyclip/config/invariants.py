@@ -54,3 +54,16 @@ def validate_config_invariants(config: ProjectConfig) -> None:
         raise ValueError("Enabled ELR requires a positive weight.")
     if config.loss.logit_adjustment.enabled and config.loss.logit_adjustment.count_source is None:
         raise ValueError("Logit adjustment requires an explicit trusted count source.")
+
+    feature_cache = config.trainer.frozen_feature_cache
+    if feature_cache.enabled:
+        if feature_cache.directory is None:
+            raise ValueError("Enabled frozen feature cache requires an explicit directory.")
+        if not config.model.backbone.freeze or config.model.lora.enabled:
+            raise ValueError("Frozen feature cache requires a fully frozen backbone without LoRA.")
+        if config.noise.enabled or config.data.strong_transform.enabled:
+            raise ValueError("Frozen feature cache is limited to noise-disabled single-view B0/B1.")
+        if config.model.teacher.enabled or config.loss.feature_anchor.enabled:
+            raise ValueError(
+                "Frozen feature cache cannot be used with a teacher or feature anchor."
+            )

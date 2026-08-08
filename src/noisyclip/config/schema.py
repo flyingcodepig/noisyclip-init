@@ -71,6 +71,8 @@ class DataConfig(StrictConfigModel):
     allow_truncated_images: bool = True
     unreadable_policy: Literal["fail_audit", "skip_with_record"] = "fail_audit"
     hash_files: bool = True
+    decode_backend: Literal["pillow", "torchvision_fallback"] = "torchvision_fallback"
+    normalize_on_device: bool = True
     train_transform: TrainTransformConfig = Field(default_factory=TrainTransformConfig)
     strong_transform: StrongTransformConfig = Field(default_factory=StrongTransformConfig)
     eval_transform: EvalTransformConfig = Field(default_factory=EvalTransformConfig)
@@ -307,6 +309,14 @@ class EarlyStoppingConfig(StrictConfigModel):
     min_delta: float = Field(default=0.001, ge=0.0)
 
 
+class FrozenFeatureCacheConfig(StrictConfigModel):
+    """Reusable exact frozen-CLIP features for B0/B1 only."""
+
+    enabled: bool = False
+    directory: str | None = None
+    verify_hashes: bool = True
+
+
 class TrainerConfig(StrictConfigModel):
     """Training budget, precision, loading, optimization, and checkpoint settings."""
 
@@ -317,6 +327,10 @@ class TrainerConfig(StrictConfigModel):
     gradient_accumulation_steps: int = Field(default=1, ge=1)
     num_workers: int = Field(default=8, ge=0)
     pin_memory: bool = True
+    prefetch_factor: int = Field(default=4, ge=1)
+    persistent_workers: bool = True
+    runtime_tensor_checks: Literal["full", "boundary"] = "boundary"
+    frozen_feature_cache: FrozenFeatureCacheConfig = Field(default_factory=FrozenFeatureCacheConfig)
     optimizer: OptimizerConfig = Field(default_factory=OptimizerConfig)
     scheduler: SchedulerConfig = Field(default_factory=SchedulerConfig)
     gradient_clip_norm: float = Field(default=1.0, gt=0.0)

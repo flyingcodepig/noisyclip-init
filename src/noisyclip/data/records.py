@@ -37,7 +37,9 @@ class Batch:
     """
 
     sample_ids: list[str]
-    image_weak: Tensor
+    image_weak: Tensor | None
     image_strong: Tensor | None
     targets: Tensor | None
     class_ids: list[str] | None
+    embedding_weak: Tensor | None = None
+    embedding_strong: Tensor | None = None

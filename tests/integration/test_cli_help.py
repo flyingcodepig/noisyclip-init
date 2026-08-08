@@ -10,6 +10,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 CLI_MODULES = [
     "noisyclip.cli.audit_data",
+    "noisyclip.cli.cache_features",
     "noisyclip.cli.train",
     "noisyclip.cli.evaluate",
     "noisyclip.cli.infer",

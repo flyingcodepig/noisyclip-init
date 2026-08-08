@@ -12,6 +12,7 @@ from torch import Tensor, nn
 from noisyclip.models.lora import lora_trainable_report, trainable_parameter_names
 from noisyclip.models.outputs import ModelOutput
 from noisyclip.models.validation import count_parameters, require_l2_normalized
+from noisyclip.utils.runtime_checks import value_checks_enabled
 
 StageName = Literal["B0", "B1", "B2"]
 
@@ -65,6 +66,11 @@ class NoisyCLIPStudent(nn.Module):
         """
 
         embedding = self.backbone.encode_image(images)
+        return self.forward_embeddings(embedding)
+
+    def forward_embeddings(self, embedding: Tensor) -> ModelOutput:
+        """Classify precomputed normalized embeddings for frozen B0/B1 runs."""
+
         require_l2_normalized(embedding)
         logits = self.head(embedding)
         if logits.ndim != 2 or logits.shape[0] != embedding.shape[0]:
@@ -72,7 +78,7 @@ class NoisyCLIPStudent(nn.Module):
                 "Classifier head must return logits shaped [B, C] with matching B, "
                 f"got {tuple(logits.shape)}."
             )
-        if not torch.isfinite(logits).all():
+        if value_checks_enabled() and not torch.isfinite(logits).all():
             raise ValueError("Student logits contain NaN or Inf values.")
         temperature = None
         current_temperature = getattr(self.head, "current_temperature", None)

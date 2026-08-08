@@ -16,6 +16,7 @@ from noisyclip.losses._validation import (
 )
 from noisyclip.models.outputs import ModelOutput
 from noisyclip.noise.state import SampleState
+from noisyclip.utils.runtime_checks import value_checks_enabled
 
 
 class WeightedCrossEntropyLoss:
@@ -92,7 +93,7 @@ class WeightedCrossEntropyLoss:
                 f"per-sample cross entropy must have shape [{batch_size}], "
                 f"got {tuple(per_sample.shape)}."
             )
-        if not torch.isfinite(per_sample).all():
+        if value_checks_enabled() and not torch.isfinite(per_sample).all():
             raise ValueError("per-sample cross entropy must be finite.")
 
         loss = (per_sample * weights).sum() / weights.sum()

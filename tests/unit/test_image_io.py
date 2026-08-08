@@ -10,7 +10,9 @@ from PIL import Image
 
 from noisyclip.config.schema import DataConfig
 from noisyclip.data.image_io import ImageAuditError, inspect_image
-from noisyclip.data.transforms import build_transform
+from noisyclip.data.records import Batch
+from noisyclip.data.transforms import build_transform, normalize_clip_tensor
+from noisyclip.engine.device import move_batch_to_device
 
 
 def _save_image(path: Path, mode: str, color: int | tuple[int, ...]) -> None:
@@ -95,3 +97,24 @@ def test_unreadable_image_is_reported(tmp_path: Path) -> None:
     assert not info.readable
     assert info.width is None
     assert "Unreadable image" in str(info.error)
+
+
+def test_uint8_transform_is_normalized_once_per_batch() -> None:
+    """The optimized path preserves exact CLIP normalization on CPU fallback."""
+
+    image = Image.new("RGB", (256, 256), (10, 20, 30))
+    transform = build_transform(DataConfig(expected_num_classes=3), split="val", normalize=False)
+    uint8_image = transform(image, sample_id="sample")
+    assert uint8_image.dtype == torch.uint8
+    batch = Batch(
+        sample_ids=["sample"],
+        image_weak=uint8_image.unsqueeze(0),
+        image_strong=None,
+        targets=torch.tensor([0]),
+        class_ids=["0000"],
+    )
+
+    moved = move_batch_to_device(batch, "cpu")
+
+    assert moved.image_weak is not None
+    assert torch.equal(moved.image_weak[0], normalize_clip_tensor(uint8_image))

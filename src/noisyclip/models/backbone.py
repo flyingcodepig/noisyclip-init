@@ -10,6 +10,7 @@ from torch import Tensor, nn
 from torch.nn import functional as F
 
 from noisyclip.models.validation import require_image_batch
+from noisyclip.utils.runtime_checks import value_checks_enabled
 
 
 class CLIPImageBackbone(nn.Module):
@@ -79,10 +80,10 @@ class CLIPImageBackbone(nn.Module):
             )
         if not raw.is_floating_point():
             raise TypeError("clip_model.encode_image must return floating-point embeddings.")
-        if not torch.isfinite(raw).all():
+        if value_checks_enabled() and not torch.isfinite(raw).all():
             raise ValueError("clip_model.encode_image returned NaN or Inf embeddings.")
         embedding = F.normalize(raw.float(), dim=1)
-        if not torch.isfinite(embedding).all():
+        if value_checks_enabled() and not torch.isfinite(embedding).all():
             raise ValueError("Normalized image embeddings contain NaN or Inf values.")
         return embedding
 

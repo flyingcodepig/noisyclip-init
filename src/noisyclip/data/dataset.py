@@ -15,6 +15,7 @@ from noisyclip.data.manifests import ManifestError, normalize_relative_path, rea
 from noisyclip.data.records import Batch, SampleRecord
 
 ImageTransform = Callable[..., Tensor]
+ImageLoader = Callable[[Path | str], Any]
 
 
 class ManifestImageDataset(Dataset[dict[str, Any]]):
@@ -44,6 +45,7 @@ class ManifestImageDataset(Dataset[dict[str, Any]]):
         image_weak_transform: ImageTransform,
         image_strong_transform: ImageTransform | None = None,
         training: bool = False,
+        image_loader: ImageLoader = load_rgb_image,
     ) -> None:
         """Initialize the dataset from manifest rows only."""
 
@@ -57,6 +59,8 @@ class ManifestImageDataset(Dataset[dict[str, Any]]):
         self.image_weak_transform = image_weak_transform
         self.image_strong_transform = image_strong_transform
         self.training = training
+        self.image_loader = image_loader
+        self._epoch = torch.zeros((), dtype=torch.int64).share_memory_()
         self._validate_records()
 
     @classmethod
@@ -69,6 +73,7 @@ class ManifestImageDataset(Dataset[dict[str, Any]]):
         image_weak_transform: ImageTransform,
         image_strong_transform: ImageTransform | None = None,
         training: bool = False,
+        image_loader: ImageLoader = load_rgb_image,
     ) -> ManifestImageDataset:
         """Construct a dataset from a serialized manifest file.
 
@@ -94,6 +99,7 @@ class ManifestImageDataset(Dataset[dict[str, Any]]):
             image_weak_transform=image_weak_transform,
             image_strong_transform=image_strong_transform,
             training=training,
+            image_loader=image_loader,
         )
 
     def __len__(self) -> int:
@@ -104,6 +110,7 @@ class ManifestImageDataset(Dataset[dict[str, Any]]):
     def set_epoch(self, epoch: int) -> None:
         """Forward an epoch number to deterministic train transforms."""
 
+        self._epoch.fill_(epoch)
         for transform in (self.image_weak_transform, self.image_strong_transform):
             setter = getattr(transform, "set_epoch", None)
             if callable(setter):
@@ -126,7 +133,12 @@ class ManifestImageDataset(Dataset[dict[str, Any]]):
         """
 
         record = self.records[index]
-        image = load_rgb_image(self.data_root / normalize_relative_path(record.relative_path))
+        epoch = int(self._epoch.item())
+        for transform in (self.image_weak_transform, self.image_strong_transform):
+            setter = getattr(transform, "set_epoch", None)
+            if callable(setter):
+                setter(epoch)
+        image = self.image_loader(self.data_root / normalize_relative_path(record.relative_path))
         image_weak = self.image_weak_transform(image, sample_id=record.sample_id)
         image_strong = (
             self.image_strong_transform(image, sample_id=record.sample_id)
@@ -224,8 +236,8 @@ def _require_image_tensor(value: Any, name: str) -> Tensor:
         raise ValueError(f"{name} must be a torch.Tensor.")
     if value.shape != (3, 224, 224):
         raise ValueError(f"{name} must have shape [3, 224, 224], got {tuple(value.shape)}")
-    if not value.is_floating_point():
-        raise ValueError(f"{name} must have floating dtype, got {value.dtype}")
-    if not torch.isfinite(value).all().item():
+    if value.dtype not in {torch.uint8, torch.float32}:
+        raise ValueError(f"{name} must have uint8 or float32 dtype, got {value.dtype}")
+    if value.is_floating_point() and not torch.isfinite(value).all().item():
         raise ValueError(f"{name} contains NaN or Inf values.")
     return value

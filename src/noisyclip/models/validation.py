@@ -5,6 +5,8 @@ from __future__ import annotations
 import torch
 from torch import Tensor
 
+from noisyclip.utils.runtime_checks import value_checks_enabled
+
 
 def require_image_batch(images: Tensor, *, field_name: str = "images") -> None:
     """Validate an image batch shaped `[B, 3, 224, 224]`.
@@ -31,7 +33,7 @@ def require_image_batch(images: Tensor, *, field_name: str = "images") -> None:
         )
     if not images.is_floating_point():
         raise TypeError(f"{field_name} must be a floating-point tensor.")
-    if not torch.isfinite(images).all():
+    if value_checks_enabled() and not torch.isfinite(images).all():
         raise ValueError(f"{field_name} contains NaN or Inf values.")
 
 
@@ -65,7 +67,7 @@ def require_embedding_batch(
         )
     if not embeddings.is_floating_point():
         raise TypeError(f"{field_name} must be a floating-point tensor.")
-    if not torch.isfinite(embeddings).all():
+    if value_checks_enabled() and not torch.isfinite(embeddings).all():
         raise ValueError(f"{field_name} contains NaN or Inf values.")
 
 
@@ -87,6 +89,8 @@ def require_l2_normalized(
         ValueError: If any row is non-finite or not L2-normalized.
     """
 
+    if not value_checks_enabled():
+        return
     norms = embeddings.norm(dim=1)
     if not torch.isfinite(norms).all():
         raise ValueError(f"{field_name} norm contains NaN or Inf values.")

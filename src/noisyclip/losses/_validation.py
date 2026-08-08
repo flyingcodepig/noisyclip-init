@@ -10,6 +10,7 @@ from torch import Tensor
 from noisyclip.data.records import Batch
 from noisyclip.models.outputs import ModelOutput
 from noisyclip.noise.state import SampleState
+from noisyclip.utils.runtime_checks import value_checks_enabled
 
 
 def require_floating_tensor(name: str, value: Tensor, shape: tuple[int | None, ...]) -> None:
@@ -32,7 +33,7 @@ def require_floating_tensor(name: str, value: Tensor, shape: tuple[int | None, .
     for dim, expected in enumerate(shape):
         if expected is not None and value.shape[dim] != expected:
             raise ValueError(f"{name} dimension {dim} must be {expected}, got {value.shape[dim]}.")
-    if not torch.isfinite(value).all():
+    if value_checks_enabled() and not torch.isfinite(value).all():
         raise ValueError(f"{name} must contain only finite values.")
 
 
@@ -49,7 +50,7 @@ def require_scalar(name: str, value: Tensor) -> None:
 
     if value.ndim != 0:
         raise ValueError(f"{name} must be a scalar tensor, got shape {tuple(value.shape)}.")
-    if not torch.isfinite(value):
+    if value_checks_enabled() and not torch.isfinite(value):
         raise ValueError(f"{name} must be finite.")
 
 
@@ -136,7 +137,7 @@ def require_targets(targets: Tensor | None, batch_size: int, num_classes: int) -
         raise ValueError(
             f"batch.targets must have shape [{batch_size}], got {tuple(targets.shape)}."
         )
-    if batch_size > 0:
+    if batch_size > 0 and value_checks_enabled():
         min_target = int(targets.min().item())
         max_target = int(targets.max().item())
         if min_target < 0 or max_target >= num_classes:
@@ -174,11 +175,11 @@ def supervised_weights(
     weights = torch.tensor(values, device=device, dtype=dtype)
     if weights.ndim != 1:
         raise ValueError("supervised weights must form a rank-1 tensor.")
-    if not torch.isfinite(weights).all():
+    if value_checks_enabled() and not torch.isfinite(weights).all():
         raise ValueError("SampleState.supervised_weight must be finite.")
-    if bool((weights < 0).any() or (weights > 1).any()):
+    if value_checks_enabled() and bool((weights < 0).any() or (weights > 1).any()):
         raise ValueError("SampleState.supervised_weight must be in the range [0, 1].")
-    if require_positive and float(weights.sum().item()) <= 0.0:
+    if require_positive and value_checks_enabled() and float(weights.sum().item()) <= 0.0:
         raise ValueError("At least one SampleState.supervised_weight must be positive.")
     return weights
 
@@ -196,6 +197,8 @@ def require_normalized_embeddings(name: str, embeddings: Tensor, tolerance: floa
     """
 
     require_floating_tensor(name, embeddings, (None, None))
+    if not value_checks_enabled():
+        return
     norms = embeddings.norm(dim=1)
     if not torch.isfinite(norms).all():
         raise ValueError(f"{name} norms must be finite.")

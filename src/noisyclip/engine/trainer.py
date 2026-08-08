@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import time
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Protocol, cast
 
 import torch
 from torch import Tensor, nn
@@ -14,6 +15,7 @@ from noisyclip.config.schema import ProjectConfig
 from noisyclip.data.records import Batch, SampleRecord
 from noisyclip.engine.checkpoint import CheckpointMetadata, load_checkpoint, save_checkpoint
 from noisyclip.engine.context import RunContext
+from noisyclip.engine.device import BatchDeviceIterator
 from noisyclip.engine.evaluator import EvaluationResult, Evaluator, save_evaluation_artifacts
 from noisyclip.engine.precision import NonFiniteTrainingError, PrecisionConfig, PrecisionManager
 from noisyclip.losses.outputs import LossOutput
@@ -29,6 +31,7 @@ from noisyclip.tracking.artifacts import ArtifactStore
 from noisyclip.tracking.logger import JsonlLogger
 from noisyclip.tracking.manifest import RunManifest
 from noisyclip.utils.atomic import atomic_copy_file
+from noisyclip.utils.runtime_checks import tensor_value_checks
 
 
 class CompositeLossLike(Protocol):
@@ -168,11 +171,15 @@ class Trainer:
                 previous_states = self._load_previous_states()
                 train_stats = self._train_epoch(epoch, previous_states)
                 self.components.run_manifest.transition("VALIDATING", extra={"epoch": epoch})
+                validation_started = time.perf_counter()
                 val_result = Evaluator(
                     model=self.components.model,
                     num_classes=self.components.run_context.num_classes,
                     device=self.device,
+                    runtime_tensor_checks=self.config.trainer.runtime_tensor_checks,
                 ).evaluate(self.components.val_loader)
+                _synchronize_if_cuda(self.device)
+                train_stats["validation_seconds"] = time.perf_counter() - validation_started
                 sample_state_epoch: int | None = None
                 if self.config.noise.enabled:
                     new_states = self._update_sample_states(epoch, previous_states, train_stats)
@@ -261,19 +268,21 @@ class Trainer:
         per_sample_logits: dict[str, Tensor] = {}
         per_sample_strong_logits: dict[str, Tensor] = {}
         per_sample_embedding: dict[str, Tensor] = {}
-        loss_total = 0.0
+        loss_total = torch.zeros((), device=self.device)
         step_count = 0
+        epoch_started = time.perf_counter()
         self.components.optimizer.zero_grad(set_to_none=True)
         _set_loader_epoch(self.components.train_loader, epoch)
-        for batch_index, batch in enumerate(self.components.train_loader):
+        device_batches = BatchDeviceIterator(self.components.train_loader, self.device)
+        for batch_index, batch in enumerate(device_batches):
             _reject_test_batch(batch)
             states = [by_id[sample_id] for sample_id in batch.sample_ids]
-            batch = _batch_to_device(batch, self.device)
-            with self.precision.autocast():
-                weak_output = self.components.model(batch.image_weak)
+            checks_enabled = self.config.trainer.runtime_tensor_checks == "full" or batch_index == 0
+            with tensor_value_checks(enabled=checks_enabled), self.precision.autocast():
+                weak_output = _forward_batch(self.components.model, batch, strong=False)
                 strong_output = (
-                    self.components.model(batch.image_strong)
-                    if batch.image_strong is not None
+                    _forward_batch(self.components.model, batch, strong=True)
+                    if batch.image_strong is not None or batch.embedding_strong is not None
                     else None
                 )
                 teacher_embedding = _teacher_embedding(self.components.teacher, batch)
@@ -298,7 +307,7 @@ class Trainer:
                 if self.components.scheduler is not None:
                     self.components.scheduler.step()
                 self.global_step += 1
-            loss_total += float(loss.total.detach().cpu().item())
+            loss_total = loss_total + loss.total.detach()
             step_count += 1
             if track_sample_state and loss.per_sample_supervised is not None:
                 detached_loss = loss.per_sample_supervised.detach().cpu().float()
@@ -332,8 +341,12 @@ class Trainer:
             if self.components.scheduler is not None:
                 self.components.scheduler.step()
             self.global_step += 1
+        _synchronize_if_cuda(self.device)
+        epoch_seconds = time.perf_counter() - epoch_started
         train_stats: dict[str, Tensor | float | dict[str, Tensor]] = {
-            "loss_total": loss_total / max(1, step_count)
+            "loss_total": float((loss_total / max(1, step_count)).cpu().item()),
+            "epoch_seconds": epoch_seconds,
+            "samples_per_second": len(self.components.train_records) / max(epoch_seconds, 1e-12),
         }
         if not track_sample_state:
             return train_stats
@@ -659,21 +672,26 @@ def _reject_all_losses_disabled(config: ProjectConfig) -> None:
         )
 
 
-def _batch_to_device(batch: Batch, device: torch.device) -> Batch:
-    return Batch(
-        sample_ids=batch.sample_ids,
-        image_weak=batch.image_weak.to(device),
-        image_strong=None if batch.image_strong is None else batch.image_strong.to(device),
-        targets=None if batch.targets is None else batch.targets.to(device),
-        class_ids=batch.class_ids,
-    )
-
-
 def _teacher_embedding(teacher: Any | None, batch: Batch) -> Tensor | None:
     if teacher is None:
         return None
     with torch.no_grad():
+        if batch.image_weak is None:
+            raise ValueError("Teacher path requires image tensors, not cached features.")
         return teacher.encode_image(batch.image_weak)
+
+
+def _forward_batch(model: Any, batch: Batch, *, strong: bool) -> ModelOutput:
+    embedding = batch.embedding_strong if strong else batch.embedding_weak
+    if embedding is not None:
+        forward_embeddings = getattr(model, "forward_embeddings", None)
+        if not callable(forward_embeddings):
+            raise ValueError("Cached feature batch requires model.forward_embeddings().")
+        return cast(ModelOutput, forward_embeddings(embedding))
+    images = batch.image_strong if strong else batch.image_weak
+    if images is None:
+        raise ValueError("Batch contains neither images nor cached embeddings.")
+    return cast(ModelOutput, model(images))
 
 
 def _get_logits(output: object) -> Tensor:
@@ -756,6 +774,9 @@ def _epoch_record(
         "global_step": global_step,
         "train/loss_total": _float_stat(train_stats["loss_total"]),
     }
+    for key in ("epoch_seconds", "samples_per_second", "validation_seconds"):
+        if key in train_stats:
+            record[f"timing/{key}"] = _float_stat(train_stats[key])
     record.update(val_result.metrics)
     for name, reason in val_result.metric_reasons.items():
         record[f"{name}/reason"] = reason
@@ -783,6 +804,11 @@ def _set_loader_epoch(loader: Iterable[Batch], epoch: int) -> None:
         set_epoch = getattr(component, "set_epoch", None)
         if callable(set_epoch):
             set_epoch(epoch)
+
+
+def _synchronize_if_cuda(device: torch.device) -> None:
+    if device.type == "cuda":
+        torch.cuda.synchronize(device)
 
 
 def _best_checkpoint_name(metric_name: str) -> str:
