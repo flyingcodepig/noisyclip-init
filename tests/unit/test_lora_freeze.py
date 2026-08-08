@@ -27,21 +27,40 @@ class TinyBlock(nn.Module):
 class TinyVisual(nn.Module):
     """Fake CLIP visual tower with OpenAI-style transformer blocks."""
 
-    def __init__(self, *, blocks: int = 4, embed_dim: int = 8) -> None:
+    def __init__(
+        self,
+        *,
+        blocks: int = 4,
+        embed_dim: int = 8,
+        sequential_blocks: bool = False,
+    ) -> None:
         super().__init__()
         self.output_dim = embed_dim
         self.stem = nn.Linear(3, embed_dim)
         self.transformer = nn.Module()
-        self.transformer.resblocks = nn.ModuleList([TinyBlock(embed_dim) for _ in range(blocks)])
+        resblocks = [TinyBlock(embed_dim) for _ in range(blocks)]
+        self.transformer.resblocks = (
+            nn.Sequential(*resblocks) if sequential_blocks else nn.ModuleList(resblocks)
+        )
         self.proj = nn.Linear(embed_dim, embed_dim)
 
 
 class TinyClip(nn.Module):
     """Fake CLIP model whose image path runs through attention blocks."""
 
-    def __init__(self, *, blocks: int = 4, embed_dim: int = 8) -> None:
+    def __init__(
+        self,
+        *,
+        blocks: int = 4,
+        embed_dim: int = 8,
+        sequential_blocks: bool = False,
+    ) -> None:
         super().__init__()
-        self.visual = TinyVisual(blocks=blocks, embed_dim=embed_dim)
+        self.visual = TinyVisual(
+            blocks=blocks,
+            embed_dim=embed_dim,
+            sequential_blocks=sequential_blocks,
+        )
 
     def encode_image(self, images: torch.Tensor) -> torch.Tensor:
         """Return normalized `[B,D]` features from `[B,3,224,224]` images."""
@@ -100,6 +119,28 @@ def test_lora_accepts_configured_negative_block_indices() -> None:
     assert not isinstance(model.visual.transformer.resblocks[1].attn, LoRAMultiheadAttention)
     assert isinstance(model.visual.transformer.resblocks[2].attn, LoRAMultiheadAttention)
     assert isinstance(model.visual.transformer.resblocks[5].attn, LoRAMultiheadAttention)
+
+
+def test_lora_accepts_openai_clip_sequential_resblocks() -> None:
+    """Official OpenAI CLIP stores visual transformer blocks in Sequential."""
+
+    model = TinyClip(blocks=12, embed_dim=8, sequential_blocks=True)
+    report = inject_lora_into_visual_transformer(
+        model,
+        LoraInjectionConfig(
+            target_blocks=(-4, -3, -2, -1),
+            target_projections=("q", "v"),
+            rank=2,
+            alpha=4,
+        ),
+    )
+
+    assert report.adapter_count == 4
+    assert not isinstance(model.visual.transformer.resblocks[7].attn, LoRAMultiheadAttention)
+    for block_index in (8, 9, 10, 11):
+        attention = model.visual.transformer.resblocks[block_index].attn
+        assert isinstance(attention, LoRAMultiheadAttention)
+        assert set(attention.target_projections) == {"q", "v"}
 
 
 def test_lora_dropout_changes_training_delta_but_not_eval_output() -> None:

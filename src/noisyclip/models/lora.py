@@ -338,12 +338,14 @@ def trainable_parameter_names(model: nn.Module) -> tuple[str, ...]:
     return tuple(name for name, parameter in model.named_parameters() if parameter.requires_grad)
 
 
-def _get_visual_resblocks(model: nn.Module) -> nn.ModuleList | list[nn.Module]:
+def _get_visual_resblocks(
+    model: nn.Module,
+) -> nn.ModuleList | nn.Sequential | list[nn.Module]:
     candidate = getattr(model, "clip_model", model)
     visual = getattr(candidate, "visual", candidate)
     transformer = getattr(visual, "transformer", None)
     resblocks = getattr(transformer, "resblocks", None)
-    if not isinstance(resblocks, (nn.ModuleList, list)):
+    if not isinstance(resblocks, (nn.ModuleList, nn.Sequential, list)):
         raise AttributeError("Model must expose visual.transformer.resblocks.")
     return resblocks
 
