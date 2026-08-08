@@ -6,6 +6,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+import yaml
+
 FIELDS = [
     "run_id",
     "experiment_name",
@@ -45,16 +47,39 @@ def main() -> int:
     rows: list[dict[str, Any]] = []
     for run_dir in sorted(item for item in root.iterdir() if item.is_dir()):
         metrics_path = run_dir / "metrics" / "best_metrics.json"
+        epoch_metrics_path = run_dir / "metrics" / "epoch_metrics.jsonl"
         manifest_path = run_dir / "manifest.json"
-        if not metrics_path.is_file() or not manifest_path.is_file():
+        config_path = run_dir / "resolved_config.yaml"
+        if not manifest_path.is_file() or not config_path.is_file():
             continue
-        metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
+        epoch_rows = _read_epoch_rows(epoch_metrics_path)
+        if metrics_path.is_file():
+            metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
+        elif epoch_rows:
+            metrics = max(
+                epoch_rows,
+                key=lambda row: float(row.get("val/top1", float("-inf"))),
+            )
+        else:
+            continue
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+        if not isinstance(config, dict):
+            continue
+        metadata = manifest.get("metadata", {})
+        if not isinstance(metadata, dict):
+            metadata = {}
+        peak_values = [
+            float(row["system/max_gpu_memory_mib"])
+            for row in epoch_rows
+            if row.get("system/max_gpu_memory_mib") is not None
+        ]
+        peak_memory = max(peak_values, default=None)
         rows.append(
             {
                 "run_id": run_dir.name,
-                "experiment_name": manifest.get("experiment_name"),
-                "seed": manifest.get("seed"),
+                "experiment_name": config.get("experiment", {}).get("name"),
+                "seed": metadata.get("seed"),
                 "status": manifest.get("status"),
                 "best_epoch": metrics.get("epoch"),
                 "val_top1": nested(metrics, "val/top1"),
@@ -62,7 +87,7 @@ def main() -> int:
                 "val_bottom_quartile_accuracy": nested(metrics, "val/bottom_quartile_accuracy"),
                 "val_trusted_top1": nested(metrics, "val/trusted_top1"),
                 "val_feature_cosine_to_base": nested(metrics, "val/feature_cosine_to_base"),
-                "peak_gpu_memory_mib": nested(metrics, "system/max_gpu_memory_mib"),
+                "peak_gpu_memory_mib": peak_memory,
             }
         )
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -72,6 +97,18 @@ def main() -> int:
         writer.writerows(rows)
     print(f"wrote {len(rows)} runs to {output}")
     return 0
+
+
+def _read_epoch_rows(path: Path) -> list[dict[str, Any]]:
+    if not path.is_file():
+        return []
+    rows: list[dict[str, Any]] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if line.strip():
+            row = json.loads(line)
+            if isinstance(row, dict):
+                rows.append(row)
+    return rows
 
 
 if __name__ == "__main__":

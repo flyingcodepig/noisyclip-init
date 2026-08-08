@@ -12,3 +12,19 @@ model:
     alpha: 16
     dropout: 0.05
 
+trainer:
+  frozen_feature_cache:
+    enabled: false
+    directory: null
+    verify_hashes: true
+  reference_feature_cache:
+    enabled: true
+    directory: ${oc.env:NOISYCLIP_REFERENCE_FEATURE_CACHE}
+    verify_hashes: true
+
+evaluation:
+  feature_drift_guard:
+    enabled: true
+    minimum_cosine: 0.90
+    maximum_epoch_drop: 0.03
+  lora_merge_atol: 0.00001

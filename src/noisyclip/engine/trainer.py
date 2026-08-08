@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+import shutil
 import time
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
@@ -19,6 +21,7 @@ from noisyclip.engine.device import BatchDeviceIterator
 from noisyclip.engine.evaluator import EvaluationResult, Evaluator, save_evaluation_artifacts
 from noisyclip.engine.precision import NonFiniteTrainingError, PrecisionConfig, PrecisionManager
 from noisyclip.losses.outputs import LossOutput
+from noisyclip.models.export import load_export_package
 from noisyclip.models.outputs import ModelOutput
 from noisyclip.models.prototypes import build_prototype_builder
 from noisyclip.noise.curriculum import PartitionCurriculum
@@ -30,7 +33,7 @@ from noisyclip.submission.mapping import mapping_digest
 from noisyclip.tracking.artifacts import ArtifactStore
 from noisyclip.tracking.logger import JsonlLogger
 from noisyclip.tracking.manifest import RunManifest
-from noisyclip.utils.atomic import atomic_copy_file
+from noisyclip.utils.atomic import atomic_copy_file, atomic_save_with_writer, atomic_write_bytes
 from noisyclip.utils.runtime_checks import tensor_value_checks
 
 
@@ -71,6 +74,8 @@ class TrainerComponents:
     preprocessing_spec: Mapping[str, object] | None = None
     config_summary: Mapping[str, object] | None = None
     resume_checkpoint: Path | None = None
+    base_val_embeddings: Mapping[str, Tensor] | None = None
+    reference_cache_signature: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -128,6 +133,7 @@ class Trainer:
         self.best_metric: float | None = None
         self.early_best_metric: float | None = None
         self.epochs_without_improvement = 0
+        self.previous_feature_cosine: float | None = None
 
     def preflight(self) -> None:
         """Validate data, loss, trainable parameters, and run boundaries.
@@ -140,7 +146,15 @@ class Trainer:
 
         _reject_test_records(self.components.train_records)
         _reject_all_losses_disabled(self.config)
-        validate_trainable_parameter_set(self.components.model, _trainability_stage(self.config))
+        stage = _trainability_stage(self.config)
+        validate_trainable_parameter_set(self.components.model, stage)
+        if stage == "B2":
+            if self.components.base_val_embeddings is None:
+                raise TrainingPreflightError(
+                    "B2 requires provenance-bound validation reference embeddings."
+                )
+            if not self.config.evaluation.feature_drift_guard.enabled:
+                raise TrainingPreflightError("B2 requires the feature drift guard.")
         self.components.run_manifest.transition("PREFLIGHT_OK")
 
     def fit(self) -> TrainResult:
@@ -165,6 +179,8 @@ class Trainer:
         exported_model: Path | None = None
         try:
             start_epoch = self._restore_if_requested()
+            if start_epoch > 0:
+                self._restore_feature_cosine_history()
             epochs_completed = start_epoch
             for epoch in range(start_epoch, self.config.trainer.epochs):
                 self.components.run_manifest.transition("TRAINING", extra={"epoch": epoch})
@@ -177,9 +193,13 @@ class Trainer:
                     num_classes=self.components.run_context.num_classes,
                     device=self.device,
                     runtime_tensor_checks=self.config.trainer.runtime_tensor_checks,
-                ).evaluate(self.components.val_loader)
+                ).evaluate(
+                    self.components.val_loader,
+                    base_embeddings=self.components.base_val_embeddings,
+                )
                 _synchronize_if_cuda(self.device)
                 train_stats["validation_seconds"] = time.perf_counter() - validation_started
+                self._guard_feature_drift(val_result)
                 sample_state_epoch: int | None = None
                 if self.config.noise.enabled:
                     new_states = self._update_sample_states(epoch, previous_states, train_stats)
@@ -229,6 +249,12 @@ class Trainer:
                     )
                 record = _epoch_record(epoch, train_stats, val_result, self.global_step)
                 logger.write(record)
+                if checkpoint_improved:
+                    _write_json(
+                        self.components.artifact_store.metric("best_metrics.json"),
+                        record,
+                        overwrite=True,
+                    )
                 epochs_completed = epoch + 1
                 if (
                     self.config.trainer.early_stopping.enabled
@@ -237,6 +263,7 @@ class Trainer:
                 ):
                     break
             self._restore_best_for_export()
+            self._save_final_prototypes()
             exported_model = self._export_final_model()
             self.components.run_manifest.mark_done()
         except Exception as exc:
@@ -255,7 +282,8 @@ class Trainer:
         self,
         epoch: int,
         previous_states: list[SampleState],
-    ) -> dict[str, Tensor | float | dict[str, Tensor]]:
+    ) -> dict[str, object]:
+        validate_trainable_parameter_set(self.components.model, _trainability_stage(self.config))
         self.components.model.train()
         by_id = {state.sample_id: state for state in previous_states}
         track_sample_state = self.config.noise.enabled
@@ -269,8 +297,14 @@ class Trainer:
         per_sample_strong_logits: dict[str, Tensor] = {}
         per_sample_embedding: dict[str, Tensor] = {}
         loss_total = torch.zeros((), device=self.device)
+        component_totals: dict[str, Tensor] = {}
+        correct_total = torch.zeros((), device=self.device, dtype=torch.int64)
+        observed_total = 0
+        gradient_norms: list[Tensor] = []
         step_count = 0
         epoch_started = time.perf_counter()
+        if self.device.type == "cuda":
+            torch.cuda.reset_peak_memory_stats(self.device)
         self.components.optimizer.zero_grad(set_to_none=True)
         _set_loader_epoch(self.components.train_loader, epoch)
         device_batches = BatchDeviceIterator(self.components.train_loader, self.device)
@@ -304,10 +338,23 @@ class Trainer:
                 ),
             )
             if stepped:
+                if self.precision.last_gradient_norm is not None:
+                    gradient_norms.append(self.precision.last_gradient_norm)
                 if self.components.scheduler is not None:
                     self.components.scheduler.step()
                 self.global_step += 1
             loss_total = loss_total + loss.total.detach()
+            for name, value in loss.components.items():
+                component_totals[name] = (
+                    component_totals.get(name, torch.zeros((), device=self.device)) + value.detach()
+                )
+            if batch.targets is None:
+                raise TrainingPreflightError("Training batch lost labeled targets.")
+            correct_total = (
+                correct_total
+                + (_get_logits(weak_output).detach().argmax(dim=1) == batch.targets).sum()
+            )
+            observed_total += len(batch.sample_ids)
             step_count += 1
             if track_sample_state and loss.per_sample_supervised is not None:
                 detached_loss = loss.per_sample_supervised.detach().cpu().float()
@@ -338,16 +385,50 @@ class Trainer:
             ),
         )
         if stepped:
+            if self.precision.last_gradient_norm is not None:
+                gradient_norms.append(self.precision.last_gradient_norm)
             if self.components.scheduler is not None:
                 self.components.scheduler.step()
             self.global_step += 1
         _synchronize_if_cuda(self.device)
         epoch_seconds = time.perf_counter() - epoch_started
-        train_stats: dict[str, Tensor | float | dict[str, Tensor]] = {
+        gradient_tensor = (
+            torch.stack(gradient_norms).float()
+            if gradient_norms
+            else torch.zeros(1, device=self.device)
+        )
+        train_stats: dict[str, object] = {
             "loss_total": float((loss_total / max(1, step_count)).cpu().item()),
+            "loss_components": {
+                name: float((value / max(1, step_count)).cpu().item())
+                for name, value in sorted(component_totals.items())
+            },
+            "train_top1": float((correct_total.float() / max(1, observed_total)).cpu().item()),
+            "gradient_norm_mean": float(gradient_tensor.mean().cpu().item()),
+            "gradient_norm_max": float(gradient_tensor.max().cpu().item()),
+            "gradient_scaler": float(self.precision.scaler.get_scale()),
+            "learning_rates": {
+                str(group.get("name", f"group_{index}")): float(group["lr"])
+                for index, group in enumerate(self.components.optimizer.param_groups)
+            },
+            "peak_gpu_memory_mib": (
+                float(torch.cuda.max_memory_allocated(self.device) / (1024**2))
+                if self.device.type == "cuda"
+                else 0.0
+            ),
+            "run_free_disk_gib": float(
+                shutil.disk_usage(self.components.run_context.run_dir).free / (1024**3)
+            ),
             "epoch_seconds": epoch_seconds,
             "samples_per_second": len(self.components.train_records) / max(epoch_seconds, 1e-12),
         }
+        head = getattr(self.components.model, "head", None)
+        current_temperature = getattr(head, "current_temperature", None)
+        if callable(current_temperature):
+            train_stats["temperature"] = float(current_temperature().detach().float().cpu().item())
+        parameter_report = getattr(self.components.model, "trainable_parameter_report", None)
+        if callable(parameter_report):
+            train_stats["parameter_report"] = parameter_report()
         if not track_sample_state:
             return train_stats
         missing = sorted(set(ordered_ids) - set(per_sample_logits))
@@ -560,23 +641,143 @@ class Trainer:
         save_evaluation_artifacts(result, self.components.artifact_store.metric("last_eval"))
         return improved
 
+    def _restore_feature_cosine_history(self) -> None:
+        if not self.config.evaluation.feature_drift_guard.enabled:
+            return
+        path = self.components.artifact_store.metric("epoch_metrics.jsonl")
+        if not path.is_file():
+            raise TrainingPreflightError("B2 resume lacks prior feature-cosine metrics.")
+        rows = [line for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
+        if not rows:
+            raise TrainingPreflightError("B2 resume has an empty epoch metric history.")
+        latest = json.loads(rows[-1])
+        value = latest.get("val/feature_cosine_to_base")
+        if not isinstance(value, int | float):
+            raise TrainingPreflightError("B2 resume lacks the latest feature cosine.")
+        self.previous_feature_cosine = float(value)
+
+    def _guard_feature_drift(self, result: EvaluationResult) -> None:
+        guard = self.config.evaluation.feature_drift_guard
+        if not guard.enabled:
+            return
+        value = result.metrics.get("val/feature_cosine_to_base")
+        if value is None:
+            raise NonFiniteTrainingError("Feature drift guard requires val/feature_cosine_to_base.")
+        current = float(value)
+        if current < guard.minimum_cosine:
+            raise NonFiniteTrainingError(
+                f"Feature cosine {current:.6f} is below {guard.minimum_cosine:.6f}."
+            )
+        if (
+            self.previous_feature_cosine is not None
+            and self.previous_feature_cosine - current > guard.maximum_epoch_drop
+        ):
+            raise NonFiniteTrainingError(
+                "Feature cosine dropped by "
+                f"{self.previous_feature_cosine - current:.6f}; maximum allowed is "
+                f"{guard.maximum_epoch_drop:.6f}."
+            )
+        self.previous_feature_cosine = current
+
     def _export_final_model(self) -> Path | None:
         destination = self.components.artifact_store.artifact("model.pt")
         export = getattr(self.components.model, "export_single_model", None)
         if callable(export):
+            before_logits: Tensor | None = None
+            equivalence_batch: Batch | None = None
+            if _trainability_stage(self.config) == "B2":
+                equivalence_batch = _first_device_batch(self.components.val_loader, self.device)
+                self.components.model.eval()
+                with torch.inference_mode(), self.precision.autocast():
+                    before_logits = (
+                        _get_logits(
+                            _forward_batch(self.components.model, equivalence_batch, strong=False)
+                        )
+                        .detach()
+                        .float()
+                    )
             if self.components.clip_weight_metadata is None:
-                return Path(export(destination))
-            return Path(
-                export(
-                    destination,
-                    preprocessing_spec=self.components.preprocessing_spec,
-                    config_summary=self.components.config_summary,
-                    class_to_idx=self.components.run_context.class_to_idx,
-                    mapping_digest=mapping_digest(self.components.run_context.class_to_idx),
-                    clip_weight_metadata=self.components.clip_weight_metadata,
+                exported = Path(export(destination))
+            else:
+                exported = Path(
+                    export(
+                        destination,
+                        preprocessing_spec=self.components.preprocessing_spec,
+                        config_summary=self.components.config_summary,
+                        class_to_idx=self.components.run_context.class_to_idx,
+                        mapping_digest=mapping_digest(self.components.run_context.class_to_idx),
+                        clip_weight_metadata=self.components.clip_weight_metadata,
+                    )
                 )
-            )
+            if before_logits is not None and equivalence_batch is not None:
+                self._write_lora_merge_equivalence(
+                    before_logits, equivalence_batch, exported_model=exported
+                )
+            return exported
         return None
+
+    def _write_lora_merge_equivalence(
+        self,
+        before_logits: Tensor,
+        batch: Batch,
+        *,
+        exported_model: Path,
+    ) -> None:
+        self.components.model.eval()
+        with torch.inference_mode(), self.precision.autocast():
+            after_logits = (
+                _get_logits(_forward_batch(self.components.model, batch, strong=False))
+                .detach()
+                .float()
+            )
+        if before_logits.shape != after_logits.shape:
+            raise NonFiniteTrainingError("LoRA merge changed the validation logit shape.")
+        max_abs = float((before_logits - after_logits).abs().max().cpu().item())
+        prediction_mismatches = int(
+            (before_logits.argmax(dim=1) != after_logits.argmax(dim=1)).sum().cpu().item()
+        )
+        tolerance = self.config.evaluation.lora_merge_atol
+        passed = max_abs <= tolerance and prediction_mismatches == 0
+        package = load_export_package(exported_model)
+        exported_state = package.get("model_state")
+        artifact_valid = isinstance(exported_state, Mapping) and all(
+            ".lora_" not in str(key) for key in exported_state
+        )
+        passed = passed and artifact_valid
+        _write_json(
+            self.components.artifact_store.metric("lora_merge_equivalence.json"),
+            {
+                "batch_size": len(batch.sample_ids),
+                "max_absolute_logit_error": max_abs,
+                "prediction_mismatch_count": prediction_mismatches,
+                "sample_ids": list(batch.sample_ids),
+                "tolerance": tolerance,
+                "export_artifact_validated": artifact_valid,
+                "valid": passed,
+            },
+            overwrite=False,
+        )
+        if not passed:
+            raise NonFiniteTrainingError(
+                "LoRA merge output equivalence failed: "
+                f"max_abs={max_abs:.6g}, mismatches={prediction_mismatches}."
+            )
+
+    def _save_final_prototypes(self) -> None:
+        if not self.config.model.head.prototype_init.enabled:
+            return
+        head = getattr(self.components.model, "head", None)
+        weight = getattr(head, "weight", None)
+        if not isinstance(weight, Tensor):
+            linear = getattr(head, "linear", None)
+            weight = getattr(linear, "weight", None)
+        if not isinstance(weight, Tensor):
+            raise TrainingPreflightError("Prototype-enabled head does not expose weights.")
+        atomic_save_with_writer(
+            self.components.artifact_store.artifact("final_prototypes.pt"),
+            lambda temporary: torch.save(weight.detach().cpu().float().contiguous(), temporary),
+            overwrite=False,
+        )
 
     def _restore_best_for_export(self) -> None:
         best_path = self.components.artifact_store.checkpoint(
@@ -625,23 +826,30 @@ def validate_trainable_parameter_set(model: nn.Module, stage: str) -> None:
 
 
 def validate_frozen_gradients(model: nn.Module, stage: str) -> None:
-    """Require frozen backbone gradients to be absent or exactly zero.
+    """Require gradients to exist only on the stage-authorized parameters.
 
     Args:
         model: Student model after backward.
         stage: Stage name controlling freeze policy.
 
     Raises:
-        NonFiniteTrainingError: If a forbidden gradient is non-zero.
+        NonFiniteTrainingError: If any forbidden parameter receives a gradient.
     """
 
     normalized_stage = "B0" if stage == "init" else stage
-    if normalized_stage not in {"B0", "B1"}:
-        return
     for name, parameter in model.named_parameters():
-        if name.startswith("backbone.") and parameter.grad is not None:
-            if not torch.equal(parameter.grad, torch.zeros_like(parameter.grad)):
-                raise NonFiniteTrainingError(f"B0/B1 backbone gradient is non-zero: {name}.")
+        if parameter.grad is None:
+            continue
+        if normalized_stage in {"B0", "B1"}:
+            authorized = not name.startswith("backbone.")
+        elif normalized_stage == "B2":
+            authorized = name.startswith("head.") or ".lora_" in f".{name}"
+        else:
+            authorized = True
+        if not authorized:
+            raise NonFiniteTrainingError(
+                f"Unauthorized {normalized_stage} gradient was created: {name}."
+            )
 
 
 def _reject_test_records(records: Sequence[SampleRecord]) -> None:
@@ -774,13 +982,57 @@ def _epoch_record(
         "global_step": global_step,
         "train/loss_total": _float_stat(train_stats["loss_total"]),
     }
+    components = train_stats.get("loss_components")
+    if isinstance(components, Mapping):
+        for name, value in components.items():
+            metric_name = str(name)
+            record[f"train/{metric_name}"] = _float_stat(value)
+    for source, destination in (
+        ("train_top1", "train/top1"),
+        ("gradient_norm_mean", "optimizer/gradient_norm_mean"),
+        ("gradient_norm_max", "optimizer/gradient_norm_max"),
+        ("gradient_scaler", "optimizer/gradient_scaler"),
+        ("temperature", "model/temperature"),
+        ("peak_gpu_memory_mib", "system/max_gpu_memory_mib"),
+        ("run_free_disk_gib", "system/run_free_disk_gib"),
+    ):
+        if source in train_stats:
+            record[destination] = _float_stat(train_stats[source])
+    learning_rates = train_stats.get("learning_rates")
+    if isinstance(learning_rates, Mapping):
+        for name, value in learning_rates.items():
+            record[f"optimizer/lr_{name}"] = _float_stat(value)
+    parameter_report = train_stats.get("parameter_report")
+    if isinstance(parameter_report, Mapping):
+        for name in ("trainable_parameters", "trainable_ratio", "lora_trainable_parameters"):
+            if name in parameter_report:
+                record[f"model/{name}"] = _float_stat(parameter_report[name])
     for key in ("epoch_seconds", "samples_per_second", "validation_seconds"):
         if key in train_stats:
             record[f"timing/{key}"] = _float_stat(train_stats[key])
     record.update(val_result.metrics)
+    train_top1 = record.get("train/top1")
+    val_top1 = record.get("val/top1")
+    if isinstance(train_top1, int | float) and isinstance(val_top1, int | float):
+        record["diagnostic/train_val_top1_gap"] = float(train_top1 - val_top1)
     for name, reason in val_result.metric_reasons.items():
         record[f"{name}/reason"] = reason
     return record
+
+
+def _first_device_batch(loader: Iterable[Batch], device: torch.device) -> Batch:
+    try:
+        return next(iter(BatchDeviceIterator(loader, device)))
+    except StopIteration as exc:
+        raise TrainingPreflightError("Validation loader produced no equivalence batch.") from exc
+
+
+def _write_json(path: Path, payload: Mapping[str, object], *, overwrite: bool) -> None:
+    atomic_write_bytes(
+        path,
+        (json.dumps(payload, indent=2, sort_keys=True) + "\n").encode("utf-8"),
+        overwrite=overwrite,
+    )
 
 
 def _float_stat(value: object) -> float:

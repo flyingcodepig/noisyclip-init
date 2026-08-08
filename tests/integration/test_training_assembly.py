@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
@@ -20,7 +21,7 @@ from noisyclip.engine.assembly import (
     evaluate_checkpoint,
     run_training,
 )
-from noisyclip.models.export import load_export_package
+from noisyclip.models.export import load_export_package, load_exported_model_auto
 
 
 class TinyBlock(nn.Module):
@@ -45,7 +46,10 @@ class TinyOfficialClip(nn.Module):
     def encode_image(self, images: torch.Tensor) -> torch.Tensor:
         """Project global RGB means to four dimensions."""
 
-        return self.projection(images.mean(dim=(2, 3)))
+        hidden = self.projection(images.mean(dim=(2, 3))).unsqueeze(0)
+        for block in self.visual.transformer.resblocks:
+            hidden = block.attn(hidden, hidden, hidden, need_weights=False)[0]
+        return hidden.squeeze(0)
 
 
 class FakeBackend:
@@ -225,3 +229,74 @@ def test_b0_and_b1_consume_provenance_bound_frozen_features(tmp_path: Path) -> N
             clip_backend=FakeBackend(),
         )
         assert evaluated.metrics["val/top1"] is not None
+
+
+def test_b2_full_run_uses_reference_cache_and_writes_required_audits(tmp_path: Path) -> None:
+    """B2 completes two steps with drift, reload, prototypes, and merge evidence."""
+
+    config_path, b1_config = _fixture_config(tmp_path, stage="B1", feature_cache=True)
+    feature_root = build_feature_cache_from_config(config_path, clip_backend=FakeBackend())
+    raw = b1_config.model_dump(mode="json")
+    raw["experiment"]["name"] = "b2"
+    raw["model"]["lora"] = {
+        "enabled": True,
+        "target_blocks": [-2, -1],
+        "target_projections": ["q", "v"],
+        "rank": 2,
+        "alpha": 4,
+        "dropout": 0.0,
+    }
+    raw["trainer"]["frozen_feature_cache"] = {
+        "enabled": False,
+        "directory": None,
+        "verify_hashes": True,
+    }
+    raw["trainer"]["reference_feature_cache"] = {
+        "enabled": True,
+        "directory": str(feature_root),
+        "verify_hashes": True,
+    }
+    raw["evaluation"]["feature_drift_guard"] = {
+        "enabled": True,
+        "minimum_cosine": -1.0,
+        "maximum_epoch_drop": 2.0,
+    }
+    b2_config = load_config_from_mapping(raw)
+    b2_path = tmp_path / "b2.yaml"
+    write_resolved_config(b2_config, b2_path)
+
+    result = run_training(b2_path, run_id="b2-run", clip_backend=FakeBackend())
+    run_dir = tmp_path / "runs" / "b2-run"
+    evaluated = evaluate_checkpoint(run_dir, result.last_checkpoint, clip_backend=FakeBackend())
+    checkpoint = torch.load(result.last_checkpoint, map_location="cpu", weights_only=False)
+    epoch_metrics = json.loads(
+        (run_dir / "metrics" / "epoch_metrics.jsonl").read_text(encoding="utf-8").strip()
+    )
+    merge_report = json.loads(
+        (run_dir / "metrics" / "lora_merge_equivalence.json").read_text(encoding="utf-8")
+    )
+    package = load_export_package(result.exported_model)
+    reloaded_export = load_exported_model_auto(
+        result.exported_model, device="cpu", backend=FakeBackend()
+    )
+    inference = reloaded_export(torch.rand(2, 3, 224, 224))
+
+    assert result.global_step == 2
+    assert checkpoint["global_step"] == 2
+    assert evaluated.metrics["val/feature_cosine_to_base"] is not None
+    assert merge_report["valid"] is True
+    assert all(".lora_" not in key for key in package["model_state"])
+    assert inference.logits.shape == (2, 3)
+    assert epoch_metrics["val/feature_cosine_to_base"] is not None
+    assert "train/loss/ce" in epoch_metrics
+    assert "train/top1" in epoch_metrics
+    assert "diagnostic/train_val_top1_gap" in epoch_metrics
+    assert "optimizer/gradient_norm_max" in epoch_metrics
+    assert "optimizer/lr_head" in epoch_metrics
+    assert "optimizer/lr_lora" in epoch_metrics
+    assert "system/max_gpu_memory_mib" in epoch_metrics
+    assert (run_dir / "metrics" / "parameter_audit.json").is_file()
+    assert (run_dir / "metrics" / "best_metrics.json").is_file()
+    assert (run_dir / "artifacts" / "initial_prototypes.pt").is_file()
+    assert (run_dir / "artifacts" / "final_prototypes.pt").is_file()
+    assert (run_dir / "DONE").is_file()

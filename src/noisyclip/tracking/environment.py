@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import platform
 import subprocess
 from pathlib import Path
@@ -30,6 +31,7 @@ def collect_environment_snapshot(*, cwd: Path | str | None = None) -> dict[str, 
         "cuda_version": torch.version.cuda,
         "gpu": _gpu_info(),
         "git": _git_info(root),
+        "source_commit_override": os.environ.get("NOISYCLIP_SOURCE_COMMIT"),
     }
 
 

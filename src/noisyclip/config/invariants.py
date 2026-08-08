@@ -67,3 +67,14 @@ def validate_config_invariants(config: ProjectConfig) -> None:
             raise ValueError(
                 "Frozen feature cache cannot be used with a teacher or feature anchor."
             )
+
+    reference_cache = config.trainer.reference_feature_cache
+    if reference_cache.enabled and reference_cache.directory is None:
+        raise ValueError("Enabled reference feature cache requires an explicit directory.")
+    if config.evaluation.feature_drift_guard.enabled:
+        if not config.model.lora.enabled:
+            raise ValueError("Feature drift guard is only valid for LoRA adaptation runs.")
+        if not reference_cache.enabled:
+            raise ValueError("Feature drift guard requires the reference feature cache.")
+        if "feature_cosine_to_base" not in config.evaluation.metrics:
+            raise ValueError("Feature drift guard requires feature_cosine_to_base evaluation.")

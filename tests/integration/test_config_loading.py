@@ -7,7 +7,12 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from noisyclip.config.loader import ConfigInheritanceError, load_config, write_resolved_config
+from noisyclip.config.loader import (
+    ConfigInheritanceError,
+    load_config,
+    load_config_from_mapping,
+    write_resolved_config,
+)
 
 VALID_CONFIG_TEXT = """
 experiment: {}
@@ -78,3 +83,37 @@ def test_config_inheritance_cycle_is_rejected(tmp_path: Path) -> None:
 
     with pytest.raises(ConfigInheritanceError, match="cycle"):
         load_config(first)
+
+
+def test_b2_drift_guard_requires_reference_cache() -> None:
+    """A LoRA drift stop rule cannot run without provenance-bound references."""
+
+    with pytest.raises(ValueError, match="reference feature cache"):
+        load_config_from_mapping(
+            {
+                "model": {
+                    "lora": {
+                        "enabled": True,
+                        "target_blocks": [-1],
+                        "target_projections": ["q"],
+                        "rank": 2,
+                        "alpha": 4,
+                    }
+                },
+                "evaluation": {"feature_drift_guard": {"enabled": True}},
+            }
+        )
+
+
+def test_declared_b2_config_has_formal_reference_and_drift_guards() -> None:
+    """The checked-in B2 overlay declares every formal safety dependency."""
+
+    root = Path(__file__).resolve().parents[2]
+    config = load_config(
+        root / "init_build" / "04_scripts_and_configs" / "configs" / "experiments" / "b2_lora.yaml"
+    )
+
+    assert config.model.lora.enabled is True
+    assert config.trainer.frozen_feature_cache.enabled is False
+    assert config.trainer.reference_feature_cache.enabled is True
+    assert config.evaluation.feature_drift_guard.enabled is True

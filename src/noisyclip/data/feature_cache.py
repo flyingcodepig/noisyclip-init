@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import math
 from collections.abc import Iterator, Mapping
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, cast
 
@@ -24,6 +25,19 @@ from noisyclip.utils.hashing import stable_hash
 
 class FeatureCacheError(RuntimeError):
     """Raised when cache identity, contents, or completeness is unsafe."""
+
+
+@dataclass(frozen=True, slots=True)
+class ReferenceFeatureCache:
+    """Validated deterministic train/validation references from a frozen cache."""
+
+    root: Path
+    signature: str
+    train_eval: Tensor
+    train_sample_ids: tuple[str, ...]
+    train_targets: Tensor
+    val_sample_ids: tuple[str, ...]
+    val_by_sample: Mapping[str, Tensor]
 
 
 def feature_cache_signature(
@@ -226,6 +240,41 @@ def load_feature_tensor(path: Path | str) -> Tensor:
     return tensor
 
 
+def load_reference_feature_cache(
+    root: Path | str,
+    *,
+    expected_signature: str,
+    verify_hashes: bool,
+) -> ReferenceFeatureCache:
+    """Load only deterministic prototype and validation reference features."""
+
+    cache_root = Path(root).resolve()
+    metadata = _load_metadata(
+        cache_root,
+        expected_signature,
+        verify_hashes,
+        required_files={"train_eval.pt", "val.pt"},
+    )
+    train_eval = load_feature_tensor(cache_root / "train_eval.pt")
+    val = load_feature_tensor(cache_root / "val.pt")
+    train_targets = torch.tensor(metadata.get("train_targets"), dtype=torch.int64)
+    train_ids = _sample_ids(metadata, "train_sample_ids")
+    val_ids = _sample_ids(metadata, "val_sample_ids")
+    if train_eval.shape[0] != len(train_ids) or train_targets.shape != (len(train_ids),):
+        raise FeatureCacheError("Reference train_eval rows do not match cache metadata.")
+    if val.shape[0] != len(val_ids):
+        raise FeatureCacheError("Reference val rows do not match cache metadata.")
+    return ReferenceFeatureCache(
+        root=cache_root,
+        signature=expected_signature,
+        train_eval=train_eval,
+        train_sample_ids=tuple(train_ids),
+        train_targets=train_targets,
+        val_sample_ids=tuple(val_ids),
+        val_by_sample={sample_id: val[index] for index, sample_id in enumerate(val_ids)},
+    )
+
+
 def _image_loader(config: ProjectConfig, dataset: ManifestImageDataset) -> DataLoader[Any]:
     return DataLoader(
         dataset,
@@ -261,7 +310,13 @@ def _save_features(path: Path, features: Tensor) -> None:
     torch.save(features.contiguous(), path)
 
 
-def _load_metadata(root: Path, expected_signature: str, verify_hashes: bool) -> Mapping[str, Any]:
+def _load_metadata(
+    root: Path,
+    expected_signature: str,
+    verify_hashes: bool,
+    *,
+    required_files: set[str] | None = None,
+) -> Mapping[str, Any]:
     path = root / "metadata.json"
     if not path.is_file():
         raise FeatureCacheError(f"Feature cache metadata is missing: {path}")
@@ -271,10 +326,26 @@ def _load_metadata(root: Path, expected_signature: str, verify_hashes: bool) -> 
     files = metadata.get("files")
     if not isinstance(files, dict):
         raise FeatureCacheError("Feature cache file manifest is malformed.")
-    for filename, expected_hash in files.items():
+    filenames = set(map(str, files)) if required_files is None else required_files
+    missing_manifest_entries = filenames - set(map(str, files))
+    if missing_manifest_entries:
+        raise FeatureCacheError(
+            f"Feature cache manifest lacks required files: {sorted(missing_manifest_entries)}"
+        )
+    for filename in sorted(filenames):
+        expected_hash = files[filename]
         feature_path = root / str(filename)
         if not feature_path.is_file():
             raise FeatureCacheError(f"Feature cache file is missing: {feature_path}")
         if verify_hashes and file_sha256(feature_path) != expected_hash:
             raise FeatureCacheError(f"Feature cache hash mismatch: {feature_path}")
     return metadata
+
+
+def _sample_ids(metadata: Mapping[str, Any], key: str) -> list[str]:
+    raw = metadata.get(key)
+    if not isinstance(raw, list) or not all(isinstance(item, str) for item in raw):
+        raise FeatureCacheError(f"Feature cache {key} is malformed.")
+    if len(set(raw)) != len(raw):
+        raise FeatureCacheError(f"Feature cache {key} contains duplicates.")
+    return raw

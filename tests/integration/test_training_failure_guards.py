@@ -9,7 +9,14 @@ import torch
 from test_two_batch_train import tiny_components
 
 from noisyclip.config.loader import load_config_from_mapping
-from noisyclip.engine.trainer import Trainer, TrainingFailedError, TrainingPreflightError
+from noisyclip.engine.evaluator import EvaluationResult
+from noisyclip.engine.precision import NonFiniteTrainingError
+from noisyclip.engine.trainer import (
+    Trainer,
+    TrainingFailedError,
+    TrainingPreflightError,
+    validate_frozen_gradients,
+)
 from noisyclip.tracking.artifacts import create_run_dir
 
 
@@ -80,6 +87,55 @@ def test_corrupt_committed_sample_state_is_not_silently_reset(tmp_path) -> None:
 
     with pytest.raises(TrainingFailedError, match="unsafe or inconsistent"):
         Trainer(config=config, components=components, device="cpu").fit()
+
+
+def test_b2_runtime_gradient_guard_rejects_unauthorized_gradient() -> None:
+    """B2 fails at the optimizer boundary if a non-LoRA backbone gets a gradient."""
+
+    model = torch.nn.Module()
+    model.head = torch.nn.Linear(2, 2)
+    model.backbone = torch.nn.Module()
+    model.backbone.weight = torch.nn.Parameter(torch.ones(2, 2))
+    model.backbone.weight.grad = torch.ones_like(model.backbone.weight)
+
+    with pytest.raises(NonFiniteTrainingError, match="Unauthorized B2 gradient"):
+        validate_frozen_gradients(model, "B2")
+
+
+def test_feature_drift_guard_stops_below_registered_floor(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """A B2 validation cosine below its preregistered floor fails immediately."""
+
+    config, components = tiny_components(tmp_path)
+    raw = config.model_dump(mode="json")
+    raw["model"]["lora"] = {
+        "enabled": True,
+        "target_blocks": [-1],
+        "target_projections": ["q"],
+        "rank": 2,
+        "alpha": 4,
+        "dropout": 0.0,
+    }
+    raw["trainer"]["reference_feature_cache"] = {
+        "enabled": True,
+        "directory": "unused",
+        "verify_hashes": True,
+    }
+    raw["evaluation"]["feature_drift_guard"] = {
+        "enabled": True,
+        "minimum_cosine": 0.9,
+        "maximum_epoch_drop": 0.03,
+    }
+    guarded = load_config_from_mapping(raw)
+    trainer = Trainer(config=guarded, components=components, device="cpu")
+    result = EvaluationResult(
+        metrics={"val/feature_cosine_to_base": 0.8},
+        metric_reasons={},
+        per_class_accuracy={},
+        confusion_matrix=torch.zeros(3, 3),
+    )
+
+    with pytest.raises(NonFiniteTrainingError, match="below"):
+        trainer._guard_feature_drift(result)
 
 
 class _NanLoss:

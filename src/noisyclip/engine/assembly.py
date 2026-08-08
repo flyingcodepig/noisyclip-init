@@ -20,9 +20,11 @@ from noisyclip.config.schema import ProjectConfig
 from noisyclip.data.dataset import ManifestImageDataset, collate_batch
 from noisyclip.data.feature_cache import (
     FrozenFeatureLoader,
+    ReferenceFeatureCache,
     build_frozen_feature_cache,
     feature_cache_signature,
     load_feature_tensor,
+    load_reference_feature_cache,
 )
 from noisyclip.data.image_io import build_image_loader
 from noisyclip.data.leakage import check_root_boundaries
@@ -51,7 +53,7 @@ from noisyclip.submission.mapping import ClassMapping, load_class_mapping
 from noisyclip.tracking.artifacts import ArtifactStore
 from noisyclip.tracking.environment import collect_environment_snapshot
 from noisyclip.tracking.manifest import RunManifest
-from noisyclip.utils.atomic import atomic_write_bytes, ensure_free_space
+from noisyclip.utils.atomic import atomic_save_with_writer, atomic_write_bytes, ensure_free_space
 from noisyclip.utils.hashing import stable_hash
 
 
@@ -147,8 +149,17 @@ def assemble_trainer(
             backend=clip_backend,
         )
         model, teacher = _build_model(config, mapping, loaded.model, device)
+        reference_cache = _load_reference_cache(
+            config,
+            data_digest_value=digest,
+            class_mapping_digest=mapping.digest,
+            clip_weight_sha256=_clip_identity(loaded.metadata),
+            train_records=train_records,
+            val_records=val_records,
+        )
         train_loader: Iterable[Batch]
         val_loader: Iterable[Batch]
+        initial_prototypes: Tensor | None = None
         if config.trainer.frozen_feature_cache.enabled:
             feature_root = _concrete_path(
                 str(config.trainer.frozen_feature_cache.directory),
@@ -177,17 +188,32 @@ def assemble_trainer(
                 verify_hashes=False,
             )
             if config.model.head.prototype_init.enabled and resume_path is None:
-                _initialize_head_from_feature_cache(config, model, feature_root, train_loader)
+                initial_prototypes = _initialize_head_from_feature_cache(
+                    config, model, feature_root, train_loader
+                )
         else:
             train_loader, val_loader = _build_loaders(config, train_records, val_records, paths)
             if config.model.head.prototype_init.enabled and resume_path is None:
-                _initialize_head_from_prototypes(
-                    config,
-                    model,
-                    train_records,
-                    paths["train_root"],
-                    device,
-                )
+                if reference_cache is not None:
+                    initial_prototypes = _initialize_head_from_reference_cache(
+                        config, model, reference_cache
+                    )
+                else:
+                    initial_prototypes = _initialize_head_from_prototypes(
+                        config,
+                        model,
+                        train_records,
+                        paths["train_root"],
+                        device,
+                    )
+        if resume_path is None:
+            _write_model_audit(
+                config,
+                model,
+                artifact_store,
+                reference_cache=reference_cache,
+                initial_prototypes=initial_prototypes,
+            )
         optimizer = _build_optimizer(config, model)
         scheduler = _build_scheduler(config, optimizer, len(train_loader))
         loss = RobustCompositeLoss(config.loss)
@@ -229,6 +255,12 @@ def assemble_trainer(
             preprocessing_spec=_preprocessing_spec(config),
             config_summary=config.model_dump(mode="json"),
             resume_checkpoint=resume_path,
+            base_val_embeddings=(
+                None if reference_cache is None else reference_cache.val_by_sample
+            ),
+            reference_cache_signature=(
+                None if reference_cache is None else reference_cache.signature
+            ),
         )
         return Trainer(config=config, components=components, device=device)
     except Exception as exc:
@@ -315,7 +347,18 @@ def evaluate_checkpoint(
         device=device,
         runtime_tensor_checks=config.trainer.runtime_tensor_checks,
     )
-    result: EvaluationResult = evaluator.evaluate(loader)
+    reference_cache = _load_reference_cache(
+        config,
+        data_digest_value=digest,
+        class_mapping_digest=mapping.digest,
+        clip_weight_sha256=_clip_identity(loaded.metadata),
+        train_records=train_records,
+        val_records=val_records,
+    )
+    result: EvaluationResult = evaluator.evaluate(
+        loader,
+        base_embeddings=None if reference_cache is None else reference_cache.val_by_sample,
+    )
     output_dir = root / "metrics" / f"evaluation_epoch_{metadata.epoch:04d}"
     save_evaluation_artifacts(result, output_dir)
     atomic_write_bytes(
@@ -538,7 +581,7 @@ def _initialize_head_from_prototypes(
     train_records: list[Any],
     train_root: Path,
     device: torch.device,
-) -> None:
+) -> Tensor:
     method = config.model.head.prototype_init.method
     if method == "multi_prototype":
         raise AssemblyError("U3 multi-prototype initialization is not part of the B0-B6 head.")
@@ -586,6 +629,7 @@ def _initialize_head_from_prototypes(
         config.data.expected_num_classes,
     )
     _copy_prototypes_to_head(model, prototypes)
+    return prototypes.detach().cpu().float()
 
 
 @torch.inference_mode()
@@ -594,7 +638,7 @@ def _initialize_head_from_feature_cache(
     model: NoisyCLIPStudent,
     feature_root: Path,
     loader: FrozenFeatureLoader,
-) -> None:
+) -> Tensor:
     features = load_feature_tensor(feature_root / "train_eval.pt")
     targets = torch.tensor(loader.metadata["train_targets"], dtype=torch.int64)
     method = config.model.head.prototype_init.method
@@ -605,6 +649,29 @@ def _initialize_head_from_feature_cache(
         keep_fraction=config.model.head.prototype_init.keep_fraction,
     ).fit(features, targets, None, config.data.expected_num_classes)
     _copy_prototypes_to_head(model, prototypes)
+    return prototypes.detach().cpu().float()
+
+
+@torch.inference_mode()
+def _initialize_head_from_reference_cache(
+    config: ProjectConfig,
+    model: NoisyCLIPStudent,
+    reference: ReferenceFeatureCache,
+) -> Tensor:
+    method = config.model.head.prototype_init.method
+    if method == "multi_prototype":
+        raise AssemblyError("Multi-prototype reference initialization is not supported.")
+    prototypes = build_prototype_builder(
+        method,
+        keep_fraction=config.model.head.prototype_init.keep_fraction,
+    ).fit(
+        reference.train_eval,
+        reference.train_targets,
+        None,
+        config.data.expected_num_classes,
+    )
+    _copy_prototypes_to_head(model, prototypes)
+    return prototypes.detach().cpu().float()
 
 
 def _copy_prototypes_to_head(model: NoisyCLIPStudent, prototypes: Tensor) -> None:
@@ -615,6 +682,122 @@ def _copy_prototypes_to_head(model: NoisyCLIPStudent, prototypes: Tensor) -> Non
         model.head.linear.bias.zero_()
     else:  # pragma: no cover - protected by configured head allowlist.
         raise AssemblyError("Configured classifier head cannot accept prototype weights.")
+
+
+def _load_reference_cache(
+    config: ProjectConfig,
+    *,
+    data_digest_value: str,
+    class_mapping_digest: str,
+    clip_weight_sha256: str,
+    train_records: list[Any],
+    val_records: list[Any],
+) -> ReferenceFeatureCache | None:
+    cache = config.trainer.reference_feature_cache
+    if not cache.enabled:
+        return None
+    root = _concrete_path(str(cache.directory), "trainer.reference_feature_cache.directory")
+    signature = feature_cache_signature(
+        config,
+        data_digest=data_digest_value,
+        class_mapping_digest=class_mapping_digest,
+        clip_weight_sha256=clip_weight_sha256,
+    )
+    reference = load_reference_feature_cache(
+        root,
+        expected_signature=signature,
+        verify_hashes=cache.verify_hashes,
+    )
+    ordered_train = sorted(train_records, key=lambda row: (row.relative_path, row.sample_id))
+    ordered_val = sorted(val_records, key=lambda row: (row.relative_path, row.sample_id))
+    expected_train_ids = tuple(record.sample_id for record in ordered_train)
+    expected_train_targets = torch.tensor(
+        [record.target for record in ordered_train], dtype=torch.int64
+    )
+    expected_val_ids = tuple(record.sample_id for record in ordered_val)
+    if reference.train_sample_ids != expected_train_ids:
+        raise AssemblyError("Reference cache train sample IDs do not match the fixed split.")
+    if not torch.equal(reference.train_targets, expected_train_targets):
+        raise AssemblyError("Reference cache train targets do not match the fixed split.")
+    if reference.val_sample_ids != expected_val_ids:
+        raise AssemblyError("Reference cache val sample IDs do not match the fixed split.")
+    return reference
+
+
+def _write_model_audit(
+    config: ProjectConfig,
+    model: NoisyCLIPStudent,
+    store: ArtifactStore,
+    *,
+    reference_cache: ReferenceFeatureCache | None,
+    initial_prototypes: Tensor | None,
+) -> None:
+    trainable = [
+        {
+            "name": name,
+            "shape": list(parameter.shape),
+            "numel": parameter.numel(),
+            "dtype": str(parameter.dtype),
+        }
+        for name, parameter in model.named_parameters()
+        if parameter.requires_grad
+    ]
+    report = {
+        **model.trainable_parameter_report(),
+        "stage": model.stage,
+        "configured_precision": config.trainer.precision,
+        "configured_precision_scope": "autocast_and_gradient_scaler",
+        "backbone_parameter_dtypes": sorted(
+            {str(parameter.dtype) for parameter in model.backbone.parameters()}
+        ),
+        "head_parameter_dtypes": sorted(
+            {str(parameter.dtype) for parameter in model.head.parameters()}
+        ),
+        "trainable_parameters_detail": trainable,
+        "reference_cache_signature": (
+            None if reference_cache is None else reference_cache.signature
+        ),
+    }
+    report["all_model_parameters_fp32"] = all(
+        parameter.dtype == torch.float32 for parameter in model.parameters()
+    )
+    _write_json(store.metric("parameter_audit.json"), report, overwrite=False)
+    if initial_prototypes is None:
+        return
+    _save_tensor(store.artifact("initial_prototypes.pt"), initial_prototypes)
+    norms = torch.linalg.vector_norm(initial_prototypes.float(), dim=1)
+    _write_json(
+        store.artifact("prototype_initialization.json"),
+        {
+            "method": config.model.head.prototype_init.method,
+            "keep_fraction": config.model.head.prototype_init.keep_fraction,
+            "class_count": int(initial_prototypes.shape[0]),
+            "embedding_dim": int(initial_prototypes.shape[1]),
+            "minimum_norm": float(norms.min().item()),
+            "maximum_norm": float(norms.max().item()),
+            "finite": bool(torch.isfinite(initial_prototypes).all().item()),
+            "reference_cache_signature": (
+                None if reference_cache is None else reference_cache.signature
+            ),
+        },
+        overwrite=False,
+    )
+
+
+def _save_tensor(path: Path, tensor: Tensor) -> None:
+    atomic_save_with_writer(
+        path,
+        lambda temporary: torch.save(tensor.detach().cpu().contiguous(), temporary),
+        overwrite=False,
+    )
+
+
+def _write_json(path: Path, payload: Any, *, overwrite: bool) -> None:
+    atomic_write_bytes(
+        path,
+        (json.dumps(payload, indent=2, sort_keys=True) + "\n").encode("utf-8"),
+        overwrite=overwrite,
+    )
 
 
 def _clip_identity(metadata: Any) -> str:
@@ -631,9 +814,11 @@ def _build_optimizer(config: ProjectConfig, model: nn.Module) -> torch.optim.Opt
         for name, parameter in model.backbone.named_parameters()
         if parameter.requires_grad and ".lora_" in f".{name}"
     ]
-    groups: list[dict[str, Any]] = [{"params": head, "lr": config.trainer.optimizer.head_lr}]
+    groups: list[dict[str, Any]] = [
+        {"name": "head", "params": head, "lr": config.trainer.optimizer.head_lr}
+    ]
     if lora:
-        groups.append({"params": lora, "lr": config.trainer.optimizer.lora_lr})
+        groups.append({"name": "lora", "params": lora, "lr": config.trainer.optimizer.lora_lr})
     return torch.optim.AdamW(groups, weight_decay=config.trainer.optimizer.weight_decay)
 
 

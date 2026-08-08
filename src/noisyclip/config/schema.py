@@ -317,6 +317,22 @@ class FrozenFeatureCacheConfig(StrictConfigModel):
     verify_hashes: bool = True
 
 
+class ReferenceFeatureCacheConfig(StrictConfigModel):
+    """Read-only frozen features used for prototypes and drift baselines."""
+
+    enabled: bool = False
+    directory: str | None = None
+    verify_hashes: bool = True
+
+
+class FeatureDriftGuardConfig(StrictConfigModel):
+    """Stop an adaptive run when validation features drift unexpectedly."""
+
+    enabled: bool = False
+    minimum_cosine: float = Field(default=0.90, ge=-1.0, le=1.0)
+    maximum_epoch_drop: float = Field(default=0.03, ge=0.0, le=2.0)
+
+
 class TrainerConfig(StrictConfigModel):
     """Training budget, precision, loading, optimization, and checkpoint settings."""
 
@@ -331,6 +347,9 @@ class TrainerConfig(StrictConfigModel):
     persistent_workers: bool = True
     runtime_tensor_checks: Literal["full", "boundary"] = "boundary"
     frozen_feature_cache: FrozenFeatureCacheConfig = Field(default_factory=FrozenFeatureCacheConfig)
+    reference_feature_cache: ReferenceFeatureCacheConfig = Field(
+        default_factory=ReferenceFeatureCacheConfig
+    )
     optimizer: OptimizerConfig = Field(default_factory=OptimizerConfig)
     scheduler: SchedulerConfig = Field(default_factory=SchedulerConfig)
     gradient_clip_norm: float = Field(default=1.0, gt=0.0)
@@ -354,6 +373,8 @@ class EvaluationConfig(StrictConfigModel):
     )
     checkpoint_selection: str = "val/top1"
     test_time_augmentation: Literal[False] = False
+    feature_drift_guard: FeatureDriftGuardConfig = Field(default_factory=FeatureDriftGuardConfig)
+    lora_merge_atol: float = Field(default=1e-5, gt=0.0)
 
 
 class TrackingConfig(StrictConfigModel):

@@ -58,6 +58,7 @@ class PrecisionManager:
         self.use_amp = config.precision == "amp_fp16" and device.type == "cuda"
         self.scaler = torch.amp.GradScaler("cuda", enabled=self.use_amp)
         self._pending_microbatches = 0
+        self.last_gradient_norm: Tensor | None = None
 
     def autocast(self) -> Any:
         """Return an autocast context manager for forward/loss computation."""
@@ -119,7 +120,7 @@ class PrecisionManager:
         if gradient_validator is not None:
             gradient_validator()
         try:
-            torch.nn.utils.clip_grad_norm_(
+            gradient_norm = torch.nn.utils.clip_grad_norm_(
                 model.parameters(),
                 self.config.gradient_clip_norm,
                 error_if_nonfinite=True,
@@ -127,6 +128,7 @@ class PrecisionManager:
             )
         except RuntimeError as exc:
             raise NonFiniteTrainingError("Gradient contains NaN or Inf values.") from exc
+        self.last_gradient_norm = gradient_norm.detach()
         self.scaler.step(optimizer)
         self.scaler.update()
         optimizer.zero_grad(set_to_none=True)
@@ -155,6 +157,7 @@ class PrecisionManager:
             raise TypeError("precision scaler state must be a dictionary.")
         self.scaler.load_state_dict(scaler_state)
         self._pending_microbatches = 0
+        self.last_gradient_norm = None
 
 
 def check_tensor_finite(name: str, tensor: Tensor) -> None:
