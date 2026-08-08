@@ -173,8 +173,11 @@ class Trainer:
                     num_classes=self.components.run_context.num_classes,
                     device=self.device,
                 ).evaluate(self.components.val_loader)
-                new_states = self._update_sample_states(epoch, previous_states, train_stats)
-                self.components.state_store.stage_epoch(new_states, epoch)
+                sample_state_epoch: int | None = None
+                if self.config.noise.enabled:
+                    new_states = self._update_sample_states(epoch, previous_states, train_stats)
+                    self.components.state_store.stage_epoch(new_states, epoch)
+                    sample_state_epoch = epoch
                 checkpoint_improved = self._update_best(val_result)
                 loss_state = _loss_state_dict(self.components.loss)
                 epoch_checkpoint = save_checkpoint(
@@ -186,7 +189,7 @@ class Trainer:
                     metadata=CheckpointMetadata(
                         epoch=epoch,
                         global_step=self.global_step,
-                        sample_state_epoch=epoch,
+                        sample_state_epoch=sample_state_epoch,
                         config_digest=self.components.run_context.config_digest,
                         data_digest=self.components.run_context.data_digest,
                         best_metric=self.best_metric,
@@ -197,7 +200,8 @@ class Trainer:
                     minimum_free_bytes=int(self.config.tracking.minimum_free_disk_gib * 1024**3),
                 )
                 self.components.run_manifest.transition("CHECKPOINTED", extra={"epoch": epoch})
-                self.components.state_store.commit_epoch(epoch)
+                if sample_state_epoch is not None:
+                    self.components.state_store.commit_epoch(sample_state_epoch)
                 last_checkpoint = atomic_copy_file(
                     epoch_checkpoint,
                     last_checkpoint,
@@ -247,7 +251,12 @@ class Trainer:
     ) -> dict[str, Tensor | float | dict[str, Tensor]]:
         self.components.model.train()
         by_id = {state.sample_id: state for state in previous_states}
-        ordered_ids = [record.sample_id for record in self.components.train_records]
+        track_sample_state = self.config.noise.enabled
+        ordered_ids = (
+            [record.sample_id for record in self.components.train_records]
+            if track_sample_state
+            else []
+        )
         per_sample_loss: dict[str, Tensor] = {}
         per_sample_logits: dict[str, Tensor] = {}
         per_sample_strong_logits: dict[str, Tensor] = {}
@@ -291,22 +300,25 @@ class Trainer:
                 self.global_step += 1
             loss_total += float(loss.total.detach().cpu().item())
             step_count += 1
-            if loss.per_sample_supervised is not None:
+            if track_sample_state and loss.per_sample_supervised is not None:
                 detached_loss = loss.per_sample_supervised.detach().cpu().float()
                 if detached_loss.shape != (len(batch.sample_ids),):
                     raise ValueError("per_sample_supervised must have shape [B].")
                 for index, sample_id in enumerate(batch.sample_ids):
                     _store_once(per_sample_loss, sample_id, detached_loss[index])
-            logits = _get_logits(weak_output).detach().cpu().float()
-            embedding = _get_embedding(weak_output).detach().cpu().float()
-            strong_logits = (
-                None if strong_output is None else _get_logits(strong_output).detach().cpu().float()
-            )
-            for index, sample_id in enumerate(batch.sample_ids):
-                _store_once(per_sample_logits, sample_id, logits[index])
-                _store_once(per_sample_embedding, sample_id, embedding[index])
-                if strong_logits is not None:
-                    _store_once(per_sample_strong_logits, sample_id, strong_logits[index])
+            if track_sample_state:
+                logits = _get_logits(weak_output).detach().cpu().float()
+                embedding = _get_embedding(weak_output).detach().cpu().float()
+                strong_logits = (
+                    None
+                    if strong_output is None
+                    else _get_logits(strong_output).detach().cpu().float()
+                )
+                for index, sample_id in enumerate(batch.sample_ids):
+                    _store_once(per_sample_logits, sample_id, logits[index])
+                    _store_once(per_sample_embedding, sample_id, embedding[index])
+                    if strong_logits is not None:
+                        _store_once(per_sample_strong_logits, sample_id, strong_logits[index])
         stepped = self.precision.step_if_needed(
             microbatch_index=step_count,
             model=self.components.model,
@@ -320,27 +332,34 @@ class Trainer:
             if self.components.scheduler is not None:
                 self.components.scheduler.step()
             self.global_step += 1
+        train_stats: dict[str, Tensor | float | dict[str, Tensor]] = {
+            "loss_total": loss_total / max(1, step_count)
+        }
+        if not track_sample_state:
+            return train_stats
         missing = sorted(set(ordered_ids) - set(per_sample_logits))
         if missing:
             raise ValueError(f"Training epoch did not visit sample_id(s): {missing}.")
-        return {
-            "loss_total": loss_total / max(1, step_count),
-            "per_sample_loss": {
-                sample_id: per_sample_loss.get(sample_id, torch.tensor(0.0))
-                for sample_id in ordered_ids
-            },
-            "per_sample_logits": {
-                sample_id: per_sample_logits[sample_id] for sample_id in ordered_ids
-            },
-            "per_sample_strong_logits": {
-                sample_id: per_sample_strong_logits[sample_id]
-                for sample_id in ordered_ids
-                if sample_id in per_sample_strong_logits
-            },
-            "per_sample_embedding": {
-                sample_id: per_sample_embedding[sample_id] for sample_id in ordered_ids
-            },
-        }
+        train_stats.update(
+            {
+                "per_sample_loss": {
+                    sample_id: per_sample_loss.get(sample_id, torch.tensor(0.0))
+                    for sample_id in ordered_ids
+                },
+                "per_sample_logits": {
+                    sample_id: per_sample_logits[sample_id] for sample_id in ordered_ids
+                },
+                "per_sample_strong_logits": {
+                    sample_id: per_sample_strong_logits[sample_id]
+                    for sample_id in ordered_ids
+                    if sample_id in per_sample_strong_logits
+                },
+                "per_sample_embedding": {
+                    sample_id: per_sample_embedding[sample_id] for sample_id in ordered_ids
+                },
+            }
+        )
+        return train_stats
 
     def _load_previous_states(self) -> list[SampleState]:
         sample_ids = [record.sample_id for record in self.components.train_records]

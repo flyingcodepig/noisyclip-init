@@ -33,7 +33,7 @@ CLIP_METADATA = {
 }
 
 
-def tiny_config(*, epochs: int = 1) -> object:
+def tiny_config(*, epochs: int = 1, noise_enabled: bool = False) -> object:
     """Return a minimal F02 config for CPU/fp32 synthetic training."""
 
     return load_config_from_mapping(
@@ -42,7 +42,11 @@ def tiny_config(*, epochs: int = 1) -> object:
             "paths": {"run_root": "runs"},
             "data": {"expected_num_classes": 3},
             "model": {},
-            "noise": {"partition": {"min_samples_per_class": 2}},
+            "noise": {
+                "enabled": noise_enabled,
+                "signals": {"ema_loss": {"enabled": noise_enabled, "coefficient": 1.0}},
+                "partition": {"min_samples_per_class": 2},
+            },
             "loss": {},
             "trainer": {
                 "epochs": epochs,
@@ -107,11 +111,13 @@ def tiny_batches(records: list[SampleRecord]) -> list[Batch]:
     return batches
 
 
-def tiny_components(tmp_path: Path, *, epochs: int = 1) -> tuple[object, TrainerComponents]:
+def tiny_components(
+    tmp_path: Path, *, epochs: int = 1, noise_enabled: bool = False
+) -> tuple[object, TrainerComponents]:
     """Create config and injected trainer components for synthetic tests."""
 
     torch.manual_seed(1)
-    config = tiny_config(epochs=epochs)
+    config = tiny_config(epochs=epochs, noise_enabled=noise_enabled)
     model = ExportableTinyStudent()
     optimizer = torch.optim.SGD(model.parameters(), lr=0.2)
     records = tiny_records()
@@ -152,11 +158,28 @@ def test_two_batch_train_updates_head_freezes_backbone_and_exports_model(tmp_pat
     assert result.exported_model == tmp_path / "run" / "artifacts" / "model.pt"
     assert (tmp_path / "run" / "checkpoints" / "best_top1.pt").is_file()
     assert (tmp_path / "run" / "checkpoints" / "epoch_0000.pt").is_file()
+    checkpoint = torch.load(result.last_checkpoint, map_location="cpu", weights_only=False)
+    assert checkpoint["sample_state_epoch"] is None
+    assert not (tmp_path / "run" / "sample_state" / "manifest.json").exists()
+    assert not list((tmp_path / "run" / "sample_state").glob("epoch_*.json"))
     assert not torch.equal(components.model.head.linear.weight.detach(), before_head)
     assert torch.equal(components.model.backbone.proj.weight.detach(), before_backbone)
     package = load_exported_model_package(result.exported_model)
     assert package.num_classes == 3
     assert not (tmp_path / "run" / "artifacts" / "teacher.pt").exists()
+
+
+def test_noise_enabled_training_still_persists_prediction_history(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """Noise-aware runs retain the per-sample state path skipped by baselines."""
+
+    config, components = tiny_components(tmp_path, noise_enabled=True)
+    result = Trainer(config=config, components=components, device="cpu").fit()
+
+    checkpoint = torch.load(result.last_checkpoint, map_location="cpu", weights_only=False)
+    assert checkpoint["sample_state_epoch"] == 0
+    states = components.state_store.load_all()
+    assert len(states) == len(components.train_records)
+    assert all(state.ema_probs is not None and len(state.ema_probs) == 3 for state in states)
 
 
 class TinyLoss:
