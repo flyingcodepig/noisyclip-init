@@ -14,6 +14,7 @@ from noisyclip.noise.signals import (
     PrototypeMarginSignal,
     PrototypeSimilaritySignal,
     update_prediction_history,
+    update_prediction_history_from_top1,
 )
 from noisyclip.noise.state import SampleState
 
@@ -127,6 +128,21 @@ def test_prediction_history_updates_probabilities_and_seen_count() -> None:
     assert all(sum(state.ema_probs or []) == pytest.approx(1.0) for state in updated)
     assert [state.prediction_history for state in updated] == [[0], [1]]
     assert logits.grad is None
+
+
+def test_compact_prediction_history_omits_probability_vectors() -> None:
+    """B3 stores only bounded top-1 history instead of one vector per class."""
+
+    updated = update_prediction_history_from_top1(
+        _states(),
+        torch.tensor([1, 0], dtype=torch.int64),
+        epoch=2,
+        history_window=2,
+    )
+
+    assert [state.prediction_history for state in updated] == [[1], [0]]
+    assert all(state.ema_probs is None for state in updated)
+    assert [state.seen_count for state in updated] == [3, 3]
 
 
 def test_prediction_stability_uses_a_fixed_top1_window() -> None:

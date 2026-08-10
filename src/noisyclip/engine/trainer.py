@@ -32,7 +32,10 @@ from noisyclip.noise.partition import (
     apply_supervision_weights,
     partition_by_class,
 )
-from noisyclip.noise.signals import prediction_stability_from_history, update_prediction_history
+from noisyclip.noise.signals import (
+    prediction_stability_from_history,
+    update_prediction_history_from_top1,
+)
 from noisyclip.noise.state import SampleState, SampleStateStore
 from noisyclip.noise.trust import ClasswiseTrustAggregator
 from noisyclip.submission.mapping import mapping_digest
@@ -298,10 +301,22 @@ class Trainer:
             if track_sample_state
             else []
         )
+        collect_trust_signals = track_sample_state and self._trust_update_due(epoch)
+        collect_loss = collect_trust_signals and self.config.noise.signals.ema_loss.enabled
+        collect_embeddings = collect_trust_signals and (
+            self.config.noise.signals.prototype_similarity.enabled
+            or self.config.noise.signals.prototype_margin.enabled
+        )
+        collect_agreement = (
+            collect_trust_signals
+            and self.config.noise.signals.augmentation_agreement.enabled
+        )
         per_sample_loss: dict[str, Tensor] = {}
         per_sample_logits: dict[str, Tensor] = {}
         per_sample_strong_logits: dict[str, Tensor] = {}
         per_sample_embedding: dict[str, Tensor] = {}
+        epoch_sample_ids: list[str] = []
+        prediction_parts: list[Tensor] = []
         loss_total = torch.zeros((), device=self.device)
         component_totals: dict[str, Tensor] = {}
         correct_total = torch.zeros((), device=self.device, dtype=torch.int64)
@@ -362,15 +377,22 @@ class Trainer:
             )
             observed_total += len(batch.sample_ids)
             step_count += 1
-            if track_sample_state and loss.per_sample_supervised is not None:
+            if collect_loss and loss.per_sample_supervised is not None:
                 detached_loss = loss.per_sample_supervised.detach().cpu().float()
                 if detached_loss.shape != (len(batch.sample_ids),):
                     raise ValueError("per_sample_supervised must have shape [B].")
                 for index, sample_id in enumerate(batch.sample_ids):
                     _store_once(per_sample_loss, sample_id, detached_loss[index])
             if track_sample_state:
-                logits = _get_logits(weak_output).detach().cpu().float()
+                weak_logits = _get_logits(weak_output).detach()
+                epoch_sample_ids.extend(batch.sample_ids)
+                prediction_parts.append(weak_logits.argmax(dim=1))
+            if collect_embeddings:
                 embedding = _get_embedding(weak_output).detach().cpu().float()
+                for index, sample_id in enumerate(batch.sample_ids):
+                    _store_once(per_sample_embedding, sample_id, embedding[index])
+            if collect_agreement:
+                logits = _get_logits(weak_output).detach().cpu().float()
                 strong_logits = (
                     None
                     if strong_output is None
@@ -378,7 +400,6 @@ class Trainer:
                 )
                 for index, sample_id in enumerate(batch.sample_ids):
                     _store_once(per_sample_logits, sample_id, logits[index])
-                    _store_once(per_sample_embedding, sample_id, embedding[index])
                     if strong_logits is not None:
                         _store_once(per_sample_strong_logits, sample_id, strong_logits[index])
         stepped = self.precision.step_if_needed(
@@ -437,17 +458,34 @@ class Trainer:
             train_stats["parameter_report"] = parameter_report()
         if not track_sample_state:
             return train_stats
-        missing = sorted(set(ordered_ids) - set(per_sample_logits))
-        if missing:
-            raise ValueError(f"Training epoch did not visit sample_id(s): {missing}.")
+        if len(set(epoch_sample_ids)) != len(epoch_sample_ids):
+            raise ValueError("sample_id was seen more than once in the same epoch.")
+        predictions = (
+            torch.cat(prediction_parts).detach().cpu().tolist() if prediction_parts else []
+        )
+        per_sample_prediction = {
+            sample_id: int(prediction)
+            for sample_id, prediction in zip(epoch_sample_ids, predictions, strict=True)
+        }
+        missing = sorted(set(ordered_ids) - set(per_sample_prediction))
+        extra = sorted(set(per_sample_prediction) - set(ordered_ids))
+        if missing or extra:
+            raise ValueError(
+                f"Training epoch sample IDs mismatch: missing={missing}, extra={extra}."
+            )
         train_stats.update(
             {
                 "per_sample_loss": {
                     sample_id: per_sample_loss.get(sample_id, torch.tensor(0.0))
                     for sample_id in ordered_ids
                 },
+                "per_sample_prediction": {
+                    sample_id: per_sample_prediction[sample_id] for sample_id in ordered_ids
+                },
                 "per_sample_logits": {
-                    sample_id: per_sample_logits[sample_id] for sample_id in ordered_ids
+                    sample_id: per_sample_logits[sample_id]
+                    for sample_id in ordered_ids
+                    if sample_id in per_sample_logits
                 },
                 "per_sample_strong_logits": {
                     sample_id: per_sample_strong_logits[sample_id]
@@ -455,7 +493,9 @@ class Trainer:
                     if sample_id in per_sample_strong_logits
                 },
                 "per_sample_embedding": {
-                    sample_id: per_sample_embedding[sample_id] for sample_id in ordered_ids
+                    sample_id: per_sample_embedding[sample_id]
+                    for sample_id in ordered_ids
+                    if sample_id in per_sample_embedding
                 },
             }
         )
@@ -474,47 +514,42 @@ class Trainer:
         train_stats: Mapping[str, object],
     ) -> list[SampleState]:
         records = self.components.train_records
+        predictions_by_id = _int_mapping(train_stats["per_sample_prediction"])
+        ordered_predictions = torch.tensor(
+            [predictions_by_id[record.sample_id] for record in records], dtype=torch.int64
+        )
+        history_updated = update_prediction_history_from_top1(
+            previous_states,
+            ordered_predictions,
+            epoch=epoch,
+            history_window=self.config.noise.signals.prediction_stability.window,
+        )
+        should_update_trust = self._trust_update_due(epoch)
+        if not should_update_trust:
+            return history_updated
+
         logits_by_id = _tensor_mapping(train_stats["per_sample_logits"])
         strong_logits_by_id = _tensor_mapping(train_stats["per_sample_strong_logits"])
         embeddings_by_id = _tensor_mapping(train_stats["per_sample_embedding"])
         losses_by_id = _tensor_mapping(train_stats["per_sample_loss"])
-        ordered_logits = torch.stack([logits_by_id[record.sample_id] for record in records])
-        history_updated = update_prediction_history(
-            previous_states,
-            ordered_logits,
-            epoch=epoch,
-            momentum=self.config.noise.signals.ema_loss.momentum,
-            history_window=self.config.noise.signals.prediction_stability.window,
+        trust_aggregator = self.components.trust_aggregator
+        if trust_aggregator is None:  # pragma: no cover - narrowed by _trust_update_due.
+            raise RuntimeError("noise update requires a trust aggregator.")
+        raw_signals = self._raw_trust_signals(
+            records=records,
+            previous_states=previous_states,
+            predictions_by_id=predictions_by_id,
+            logits_by_id=logits_by_id,
+            strong_logits_by_id=strong_logits_by_id,
+            embeddings_by_id=embeddings_by_id,
+            losses_by_id=losses_by_id,
         )
-        should_update_trust = (
-            self.config.noise.enabled
-            and self.components.trust_aggregator is not None
-            and epoch >= self.config.noise.warmup_epochs
-            and (epoch - self.config.noise.warmup_epochs) % self.config.noise.update_interval_epochs
-            == 0
+        aggregated = trust_aggregator.update_epoch(
+            records,
+            raw_signals,
+            history_updated,
+            epoch,
         )
-        if should_update_trust:
-            trust_aggregator = self.components.trust_aggregator
-            if trust_aggregator is None:  # pragma: no cover - narrowed above.
-                raise RuntimeError("noise update requires a trust aggregator.")
-            raw_signals = self._raw_trust_signals(
-                records=records,
-                previous_states=previous_states,
-                logits_by_id=logits_by_id,
-                strong_logits_by_id=strong_logits_by_id,
-                embeddings_by_id=embeddings_by_id,
-                losses_by_id=losses_by_id,
-            )
-            aggregated = trust_aggregator.update_epoch(
-                records,
-                raw_signals,
-                history_updated,
-                epoch,
-            )
-        else:
-            aggregated = history_updated
-        if not self.config.noise.enabled:
-            return aggregated
         targets = torch.tensor([_target(record) for record in records], dtype=torch.int64)
         trust_scores = torch.tensor(
             [state.trust_score for state in aggregated],
@@ -542,11 +577,22 @@ class Trainer:
             return self.components.curriculum.apply(weighted, epoch)
         return weighted
 
+    def _trust_update_due(self, epoch: int) -> bool:
+        return (
+            self.config.noise.enabled
+            and self.components.trust_aggregator is not None
+            and epoch >= self.config.noise.warmup_epochs
+            and (epoch - self.config.noise.warmup_epochs)
+            % self.config.noise.update_interval_epochs
+            == 0
+        )
+
     def _raw_trust_signals(
         self,
         *,
         records: list[SampleRecord],
         previous_states: list[SampleState],
+        predictions_by_id: Mapping[str, int],
         logits_by_id: Mapping[str, Tensor],
         strong_logits_by_id: Mapping[str, Tensor],
         embeddings_by_id: Mapping[str, Tensor],
@@ -571,7 +617,7 @@ class Trainer:
             window = self.config.noise.signals.prediction_stability.window
             values = []
             for record, state in zip(records, previous_states, strict=True):
-                current = int(logits_by_id[record.sample_id].argmax().item())
+                current = predictions_by_id[record.sample_id]
                 values.append(
                     torch.tensor(
                         prediction_stability_from_history(
@@ -1020,6 +1066,19 @@ def _tensor_mapping(raw: object) -> dict[str, Tensor]:
     for key, value in raw.items():
         if not isinstance(key, str) or not isinstance(value, Tensor):
             raise TypeError("train stat mappings must be str -> Tensor.")
+        result[key] = value
+    return result
+
+
+def _int_mapping(raw: object) -> dict[str, int]:
+    if not isinstance(raw, Mapping):
+        raise TypeError("train stat prediction mapping must be a mapping.")
+    result: dict[str, int] = {}
+    for key, value in raw.items():
+        if not isinstance(key, str) or isinstance(value, bool) or not isinstance(value, int):
+            raise TypeError("train stat predictions must map string IDs to integers.")
+        if value < 0:
+            raise ValueError("train stat predictions must be non-negative.")
         result[key] = value
     return result
 

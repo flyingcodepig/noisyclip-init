@@ -17,6 +17,7 @@ from noisyclip.models.classifier import LinearClassifierHead
 from noisyclip.models.export import export_student_model
 from noisyclip.models.student import NoisyCLIPStudent
 from noisyclip.noise.state import JsonSampleStateStore, SampleState
+from noisyclip.noise.trust import ClasswiseTrustAggregator
 from noisyclip.submission.package import load_exported_model_package
 from noisyclip.tracking.artifacts import ArtifactStore
 from noisyclip.tracking.manifest import RunManifest
@@ -33,7 +34,9 @@ CLIP_METADATA = {
 }
 
 
-def tiny_config(*, epochs: int = 1, noise_enabled: bool = False) -> object:
+def tiny_config(
+    *, epochs: int = 1, noise_enabled: bool = False, warmup_epochs: int = 3
+) -> object:
     """Return a minimal F02 config for CPU/fp32 synthetic training."""
 
     return load_config_from_mapping(
@@ -44,6 +47,7 @@ def tiny_config(*, epochs: int = 1, noise_enabled: bool = False) -> object:
             "model": {},
             "noise": {
                 "enabled": noise_enabled,
+                "warmup_epochs": warmup_epochs,
                 "signals": {"ema_loss": {"enabled": noise_enabled, "coefficient": 1.0}},
                 "partition": {"min_samples_per_class": 2},
             },
@@ -112,12 +116,20 @@ def tiny_batches(records: list[SampleRecord]) -> list[Batch]:
 
 
 def tiny_components(
-    tmp_path: Path, *, epochs: int = 1, noise_enabled: bool = False
+    tmp_path: Path,
+    *,
+    epochs: int = 1,
+    noise_enabled: bool = False,
+    warmup_epochs: int = 3,
 ) -> tuple[object, TrainerComponents]:
     """Create config and injected trainer components for synthetic tests."""
 
     torch.manual_seed(1)
-    config = tiny_config(epochs=epochs, noise_enabled=noise_enabled)
+    config = tiny_config(
+        epochs=epochs,
+        noise_enabled=noise_enabled,
+        warmup_epochs=warmup_epochs,
+    )
     model = ExportableTinyStudent()
     optimizer = torch.optim.SGD(model.parameters(), lr=0.2)
     records = tiny_records()
@@ -170,7 +182,7 @@ def test_two_batch_train_updates_head_freezes_backbone_and_exports_model(tmp_pat
 
 
 def test_noise_enabled_training_still_persists_prediction_history(tmp_path) -> None:  # type: ignore[no-untyped-def]
-    """Noise-aware runs retain the per-sample state path skipped by baselines."""
+    """Warmup persists compact history without arbitrary trust weighting."""
 
     config, components = tiny_components(tmp_path, noise_enabled=True)
     result = Trainer(config=config, components=components, device="cpu").fit()
@@ -179,7 +191,23 @@ def test_noise_enabled_training_still_persists_prediction_history(tmp_path) -> N
     assert checkpoint["sample_state_epoch"] == 0
     states = components.state_store.load_all()
     assert len(states) == len(components.train_records)
-    assert all(state.ema_probs is not None and len(state.ema_probs) == 3 for state in states)
+    assert all(state.ema_probs is None for state in states)
+    assert all(len(state.prediction_history) == 1 for state in states)
+    assert {state.partition for state in states} == {"trusted"}
+    assert {state.supervised_weight for state in states} == {1.0}
+
+
+def test_noise_enabled_training_updates_trust_when_warmup_is_due(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """The first due trust update collects signals while keeping state compact."""
+
+    config, components = tiny_components(tmp_path, noise_enabled=True, warmup_epochs=0)
+    components.trust_aggregator = ClasswiseTrustAggregator.from_config(config.noise)
+    Trainer(config=config, components=components, device="cpu").fit()
+
+    states = components.state_store.load_all()
+    assert all(state.ema_loss > 0.0 for state in states)
+    assert all(state.seen_count == 1 for state in states)
+    assert all(state.ema_probs is None for state in states)
 
 
 class TinyLoss:

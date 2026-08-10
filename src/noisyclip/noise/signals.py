@@ -315,6 +315,44 @@ def update_prediction_history(
     return updated
 
 
+def update_prediction_history_from_top1(
+    states: list[SampleState],
+    predictions: Tensor,
+    *,
+    epoch: int,
+    history_window: int = 3,
+) -> list[SampleState]:
+    """Persist compact top-1 history without per-class probability vectors."""
+
+    if epoch < 0:
+        raise ValueError(f"epoch must be non-negative, got {epoch}.")
+    if history_window < 1:
+        raise ValueError("history_window must be positive.")
+    if predictions.shape != (len(states),) or predictions.dtype != torch.int64:
+        raise ValueError(f"predictions must be int64 shape [{len(states)}].")
+    if bool((predictions < 0).any()):
+        raise ValueError("predictions must be non-negative.")
+    sample_ids = [state.sample_id for state in states]
+    if any(not sample_id for sample_id in sample_ids) or len(set(sample_ids)) != len(sample_ids):
+        raise ValueError("states must contain unique, non-empty sample_id values.")
+
+    updated: list[SampleState] = []
+    for state, prediction in zip(states, predictions.tolist(), strict=True):
+        prior = (
+            state.prediction_history[-(history_window - 1) :] if history_window > 1 else []
+        )
+        updated.append(
+            replace(
+                state,
+                seen_count=state.seen_count + 1,
+                ema_probs=None,
+                prediction_history=[*prior, int(prediction)],
+                updated_epoch=epoch,
+            )
+        )
+    return updated
+
+
 def prediction_stability_from_history(
     history: list[int],
     *,

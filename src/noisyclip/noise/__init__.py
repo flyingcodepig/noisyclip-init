@@ -11,6 +11,7 @@ from noisyclip.noise.signals import (
     PrototypeMarginSignal,
     PrototypeSimilaritySignal,
     update_prediction_history,
+    update_prediction_history_from_top1,
 )
 from noisyclip.noise.state import (
     JsonSampleStateStore,
@@ -34,6 +35,7 @@ __all__ = [
     "PrototypeMarginSignal",
     "PrototypeSimilaritySignal",
     "update_prediction_history",
+    "update_prediction_history_from_top1",
     "PseudoLabelGate",
     "SampleState",
     "SampleStateStore",
