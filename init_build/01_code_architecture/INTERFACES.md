@@ -55,6 +55,7 @@ class SampleState:
     pseudo_target: int | None
     pseudo_confidence: float | None
     updated_epoch: int
+    prediction_history: list[int] # bounded recent top-1 predictions
 
 @dataclass(slots=True)
 class LossOutput:
@@ -246,4 +247,3 @@ submission: {}
 ```
 
 配置加载后必须：解析继承 -> 环境变量替换 -> Pydantic 校验 -> 跨字段不变量检查 -> 写 `resolved_config.yaml` -> 冻结对象。训练过程中不得修改配置对象。
-

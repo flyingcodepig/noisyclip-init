@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import torch
 import torch.nn.functional as F
 from torch import Tensor
 
@@ -10,6 +11,7 @@ from noisyclip.losses._validation import (
     require_batch_alignment,
     require_model_output,
     require_scalar,
+    supervised_weights,
 )
 from noisyclip.models.outputs import ModelOutput
 from noisyclip.noise.state import SampleState
@@ -70,7 +72,7 @@ class ConsistencyLoss:
             batch: Batch with unique sample IDs.
             student_weak: Weak-view output with logits `[B, C]`.
             student_strong: Strong-view output with logits `[B, C]` when enabled.
-            sample_states: Batch-aligned states used for ID checks.
+            sample_states: Batch-aligned states providing trust/curriculum weights.
             epoch: Non-negative epoch index controlling warmup.
 
         Returns:
@@ -107,6 +109,14 @@ class ConsistencyLoss:
 
         target = F.softmax(student_weak.logits / self.temperature, dim=1).detach()
         log_prediction = F.log_softmax(student_strong.logits / self.temperature, dim=1)
-        loss = F.kl_div(log_prediction, target, reduction="batchmean") * (self.temperature**2)
+        per_sample = F.kl_div(log_prediction, target, reduction="none").sum(dim=1)
+        weights = supervised_weights(
+            sample_states,
+            device=per_sample.device,
+            dtype=per_sample.dtype,
+            require_positive=False,
+        )
+        denominator = weights.sum().clamp_min(torch.finfo(weights.dtype).eps)
+        loss = (per_sample * weights).sum() / denominator * (self.temperature**2)
         require_scalar(self.name, loss)
         return loss

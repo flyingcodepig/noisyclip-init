@@ -5,7 +5,11 @@ from __future__ import annotations
 import pytest
 import torch
 
-from noisyclip.noise.partition import apply_partitions, partition_by_class
+from noisyclip.noise.partition import (
+    apply_partitions,
+    apply_supervision_weights,
+    partition_by_class,
+)
 from noisyclip.noise.state import SampleState
 
 
@@ -87,3 +91,28 @@ def test_apply_partitions_updates_states_and_rejects_invalid_partition() -> None
 
     with pytest.raises(ValueError, match="Invalid partition"):
         apply_partitions(states, {"a": "clean", "b": "trusted"}, epoch=1)
+
+
+def test_supervision_weight_mapping_uses_all_configured_bounds() -> None:
+    """Partition weights are rebuilt from trust instead of reusing a scaled weight."""
+
+    states = [_state("a"), _state("b"), _state("c")]
+    states[0].partition = "trusted"
+    states[0].supervised_weight = 0.01
+    states[1].partition = "uncertain"
+    states[1].trust_score = 0.5
+    states[1].supervised_weight = 0.01
+    states[2].partition = "suspicious"
+    states[2].supervised_weight = 0.01
+
+    updated = apply_supervision_weights(
+        states,
+        trusted=1.0,
+        uncertain_min=0.3,
+        uncertain_max=0.7,
+        suspicious=0.1,
+        epoch=2,
+    )
+
+    assert [state.supervised_weight for state in updated] == pytest.approx([1.0, 0.5, 0.1])
+    assert [state.updated_epoch for state in updated] == [2, 2, 2]

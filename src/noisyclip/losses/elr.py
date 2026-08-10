@@ -13,6 +13,7 @@ from noisyclip.losses._validation import (
     require_batch_alignment,
     require_model_output,
     require_scalar,
+    supervised_weights,
 )
 from noisyclip.models.outputs import ModelOutput
 from noisyclip.noise.state import SampleState
@@ -109,24 +110,34 @@ class ELRLoss:
         if not torch.isfinite(probabilities).all():
             raise ValueError("ELR probabilities must be finite.")
         detached_probabilities = probabilities.detach()
+        weights = supervised_weights(
+            sample_states,
+            device=probabilities.device,
+            dtype=probabilities.dtype,
+            require_positive=False,
+        )
 
         history_rows: list[Tensor] = []
-        for row, sample_id in zip(detached_probabilities, batch.sample_ids, strict=True):
+        for row, sample_id, state in zip(
+            detached_probabilities, batch.sample_ids, sample_states, strict=True
+        ):
+            sample_weight = state.supervised_weight
             previous = self._targets.get(sample_id)
             if previous is None:
                 updated = row.detach().cpu()
             else:
                 self._validate_history_row(sample_id, previous, num_classes)
-                updated = (
-                    self.target_momentum * previous
-                    + (1.0 - self.target_momentum) * row.detach().cpu()
-                )
-            self._targets[sample_id] = updated.detach().clone()
+                update_rate = (1.0 - self.target_momentum) * sample_weight
+                updated = (1.0 - update_rate) * previous + update_rate * row.detach().cpu()
+            if sample_weight > 0.0:
+                self._targets[sample_id] = updated.detach().clone()
             history_rows.append(updated.to(device=probabilities.device, dtype=probabilities.dtype))
 
         target_history = torch.stack(history_rows, dim=0).detach()
         agreement = (probabilities * target_history).sum(dim=1)
-        loss = torch.log(torch.clamp(1.0 - agreement, min=self.epsilon)).mean()
+        per_sample = torch.log(torch.clamp(1.0 - agreement, min=self.epsilon))
+        denominator = weights.sum().clamp_min(torch.finfo(weights.dtype).eps)
+        loss = (per_sample * weights).sum() / denominator
         require_scalar(self.name, loss)
         return loss
 

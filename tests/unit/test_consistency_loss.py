@@ -94,3 +94,25 @@ def test_consistency_disabled_does_not_require_strong_view() -> None:
     )
 
     assert value.item() == 0.0
+
+
+def test_consistency_uses_sample_supervision_weights() -> None:
+    """A zero-weight sample contributes no strong-branch consistency gradient."""
+
+    weak_logits = torch.tensor([[2.0, 0.0], [0.0, 2.0]], requires_grad=True)
+    strong_logits = torch.tensor([[0.0, 2.0], [2.0, 0.0]], requires_grad=True)
+    states = [_state("a"), _state("b")]
+    states[1].supervised_weight = 0.0
+
+    loss = ConsistencyLoss(start_epoch=0)(
+        _batch(strong=True),
+        _output(weak_logits),
+        _output(strong_logits),
+        states,
+        epoch=0,
+    )
+    loss.backward()
+
+    assert strong_logits.grad is not None
+    assert torch.count_nonzero(strong_logits.grad[0]).item() > 0
+    assert torch.count_nonzero(strong_logits.grad[1]).item() == 0

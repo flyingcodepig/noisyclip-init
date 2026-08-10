@@ -112,6 +112,23 @@ def test_elr_teacher_history_is_detached_from_student_logits() -> None:
         assert not item.requires_grad
 
 
+def test_elr_uses_sample_weights_for_loss_and_history() -> None:
+    """A zero-weight sample has no gradient and does not create ELR history."""
+
+    logits = torch.tensor([[2.0, -1.0], [-1.0, 2.0]], requires_grad=True)
+    states = [_state("a"), _state("b")]
+    states[1].supervised_weight = 0.0
+    elr = ELRLoss(start_epoch=0)
+
+    value = elr(_batch(["a", "b"]), _output(logits), states, epoch=0)
+    value.backward()
+
+    assert logits.grad is not None
+    assert torch.count_nonzero(logits.grad[0]).item() > 0
+    assert torch.count_nonzero(logits.grad[1]).item() == 0
+    assert set(elr.state_dict()["targets"]) == {"a"}  # type: ignore[arg-type]
+
+
 @pytest.mark.parametrize(
     "field,value,message",
     [

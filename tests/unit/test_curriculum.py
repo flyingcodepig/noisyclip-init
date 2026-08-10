@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from noisyclip.noise.curriculum import PartitionCurriculum, apply_curriculum
+from noisyclip.noise.partition import apply_supervision_weights
 from noisyclip.noise.state import SampleState
 
 
@@ -47,6 +48,39 @@ def test_enabled_curriculum_scales_weights_by_epoch_and_partition() -> None:
     assert [state.supervised_weight for state in updated] == [1.0, 0.3, 0.0]
     assert all(0.0 <= state.supervised_weight <= 1.0 for state in updated)
     assert states[1].supervised_weight == 0.6
+
+
+def test_curriculum_does_not_compound_a_previous_epoch_scale() -> None:
+    """Rebuilding base weights prevents cumulative attenuation between updates."""
+
+    curriculum = PartitionCurriculum(
+        enabled=True,
+        uncertain_start_epoch=2,
+        ramp_epochs=2,
+    )
+    states = [_state("a", "uncertain", 0.01)]
+
+    base_epoch_2 = apply_supervision_weights(
+        states,
+        trusted=1.0,
+        uncertain_min=0.3,
+        uncertain_max=0.7,
+        suspicious=0.1,
+        epoch=2,
+    )
+    scaled_epoch_2 = curriculum.apply(base_epoch_2, epoch=2)
+    base_epoch_3 = apply_supervision_weights(
+        scaled_epoch_2,
+        trusted=1.0,
+        uncertain_min=0.3,
+        uncertain_max=0.7,
+        suspicious=0.1,
+        epoch=3,
+    )
+    scaled_epoch_3 = curriculum.apply(base_epoch_3, epoch=3)
+
+    assert scaled_epoch_2[0].supervised_weight == pytest.approx(0.25)
+    assert scaled_epoch_3[0].supervised_weight == pytest.approx(0.5)
 
 
 def test_curriculum_rejects_invalid_epoch_and_partition() -> None:

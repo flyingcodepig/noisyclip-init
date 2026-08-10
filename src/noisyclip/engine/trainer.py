@@ -25,8 +25,12 @@ from noisyclip.models.export import load_export_package
 from noisyclip.models.outputs import ModelOutput
 from noisyclip.models.prototypes import build_prototype_builder
 from noisyclip.noise.curriculum import PartitionCurriculum
-from noisyclip.noise.partition import apply_partitions, partition_by_class
-from noisyclip.noise.signals import update_prediction_history
+from noisyclip.noise.partition import (
+    apply_partitions,
+    apply_supervision_weights,
+    partition_by_class,
+)
+from noisyclip.noise.signals import prediction_stability_from_history, update_prediction_history
 from noisyclip.noise.state import SampleState, SampleStateStore
 from noisyclip.noise.trust import ClasswiseTrustAggregator
 from noisyclip.submission.mapping import mapping_digest
@@ -478,6 +482,7 @@ class Trainer:
             ordered_logits,
             epoch=epoch,
             momentum=self.config.noise.signals.ema_loss.momentum,
+            history_window=self.config.noise.signals.prediction_stability.window,
         )
         should_update_trust = (
             self.config.noise.enabled
@@ -522,9 +527,18 @@ class Trainer:
             min_samples_per_class=self.config.noise.partition.min_samples_per_class,
         )
         partitioned = apply_partitions(aggregated, partitions, epoch=epoch)
+        weights = self.config.noise.weights
+        weighted = apply_supervision_weights(
+            partitioned,
+            trusted=weights.trusted,
+            uncertain_min=weights.uncertain_min,
+            uncertain_max=weights.uncertain_max,
+            suspicious=weights.suspicious,
+            epoch=epoch,
+        )
         if self.components.curriculum is not None:
-            return self.components.curriculum.apply(partitioned, epoch)
-        return partitioned
+            return self.components.curriculum.apply(weighted, epoch)
+        return weighted
 
     def _raw_trust_signals(
         self,
@@ -552,13 +566,19 @@ class Trainer:
                 current,
             )
         if enabled.get("prediction_stability", 0.0) > 0.0:
+            window = self.config.noise.signals.prediction_stability.window
             values = []
             for record, state in zip(records, previous_states, strict=True):
-                current = logits_by_id[record.sample_id].softmax(dim=0)
-                if state.ema_probs is None:
-                    values.append(torch.tensor(0.0))
-                else:
-                    values.append((current * torch.tensor(state.ema_probs)).sum())
+                current = int(logits_by_id[record.sample_id].argmax().item())
+                values.append(
+                    torch.tensor(
+                        prediction_stability_from_history(
+                            state.prediction_history,
+                            current=current,
+                            window=window,
+                        )
+                    )
+                )
             raw["prediction_stability"] = torch.stack(values)
         if enabled.get("augmentation_agreement", 0.0) > 0.0:
             missing = [r.sample_id for r in records if r.sample_id not in strong_logits_by_id]

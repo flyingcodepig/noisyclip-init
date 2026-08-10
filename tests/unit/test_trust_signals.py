@@ -125,7 +125,22 @@ def test_prediction_history_updates_probabilities_and_seen_count() -> None:
     assert all(state.updated_epoch == 1 for state in updated)
     assert all(state.ema_probs is not None for state in updated)
     assert all(sum(state.ema_probs or []) == pytest.approx(1.0) for state in updated)
+    assert [state.prediction_history for state in updated] == [[0], [1]]
     assert logits.grad is None
+
+
+def test_prediction_stability_uses_a_fixed_top1_window() -> None:
+    """Stability is neutral until the configured history window is full."""
+
+    batch = _batch()
+    states = _states()
+    states[0].prediction_history = [0, 0]
+    states[1].prediction_history = [0, 1]
+    output = _output(torch.tensor([[3.0, 0.0], [0.0, 3.0]]))
+
+    values = PredictionStabilitySignal(window=3).compute(batch, output, None, states, None)
+
+    assert values.tolist() == pytest.approx([1.0, 2.0 / 3.0])
 
 
 def test_prediction_history_rejects_wrong_probability_history() -> None:

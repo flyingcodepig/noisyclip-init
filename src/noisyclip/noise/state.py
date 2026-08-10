@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import os
 from collections.abc import Mapping, Sequence
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -42,6 +42,7 @@ class SampleState:
     pseudo_target: int | None
     pseudo_confidence: float | None
     updated_epoch: int
+    prediction_history: list[int] = field(default_factory=list)
 
 
 class JsonSampleStateStore:
@@ -344,6 +345,7 @@ def _state_from_mapping(raw: object) -> SampleState:
                 None if raw.get("pseudo_confidence") is None else float(raw["pseudo_confidence"])
             ),
             updated_epoch=int(raw["updated_epoch"]),
+            prediction_history=[int(item) for item in raw.get("prediction_history", [])],
         )
     except KeyError as exc:
         raise ValueError(f"Sample state entry is missing field {exc.args[0]!r}.") from exc
@@ -429,6 +431,11 @@ def _validate_states(states: list[SampleState], *, expected_epoch: int) -> None:
         if state.pseudo_target is not None and state.pseudo_target < 0:
             raise ValueError(f"pseudo_target must be non-negative for sample_id={state.sample_id}.")
         _validate_probability(state.pseudo_confidence, field_name="pseudo_confidence")
+        if any(value < 0 for value in state.prediction_history):
+            raise ValueError(
+                f"prediction_history must contain non-negative class indices for "
+                f"sample_id={state.sample_id}."
+            )
 
 
 def _write_json_atomic(path: Path, payload: Mapping[str, object]) -> None:

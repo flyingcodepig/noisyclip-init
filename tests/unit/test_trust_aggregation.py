@@ -94,3 +94,23 @@ def test_trust_aggregation_rejects_zero_coefficients_and_missing_signal() -> Non
 
     with pytest.raises(ValueError, match="missing"):
         aggregator.update_epoch(records, {}, [_state("a")], epoch=0)
+
+
+def test_trust_aggregation_can_normalize_globally() -> None:
+    """Disabling class-wise normalization ranks one shared sample population."""
+
+    records = [_record("a", 0), _record("b", 0), _record("c", 1), _record("d", 1)]
+    previous = [_state(record.sample_id) for record in records]
+    raw = {"ema_loss": torch.tensor([1.0, 2.0, 100.0, 200.0])}
+
+    classwise = ClasswiseTrustAggregator(
+        {"ema_loss": 1.0}, normalize_within_class=True
+    ).update_epoch(records, raw, previous, epoch=1)
+    global_rank = ClasswiseTrustAggregator(
+        {"ema_loss": 1.0}, normalize_within_class=False
+    ).update_epoch(records, raw, previous, epoch=1)
+
+    assert [state.trust_score for state in classwise] == pytest.approx([1.0, 0.0, 1.0, 0.0])
+    assert [state.trust_score for state in global_rank] == pytest.approx(
+        [1.0, 2.0 / 3.0, 1.0 / 3.0, 0.0]
+    )

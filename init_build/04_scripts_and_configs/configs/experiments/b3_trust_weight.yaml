@@ -10,8 +10,7 @@ noise:
   normalize_within_class: true
   signals:
     ema_loss: {enabled: true, coefficient: 0.35, momentum: 0.9}
-    augmentation_agreement: {enabled: true, coefficient: 0.15}
+    augmentation_agreement: {enabled: false, coefficient: 0.0}
     prototype_similarity: {enabled: true, coefficient: 0.20}
     prototype_margin: {enabled: true, coefficient: 0.20}
     prediction_stability: {enabled: true, coefficient: 0.10, window: 3}
-

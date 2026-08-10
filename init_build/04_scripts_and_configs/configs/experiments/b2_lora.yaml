@@ -10,7 +10,7 @@ model:
     target_projections: [q, v]
     rank: 8
     alpha: 16
-    dropout: 0.05
+    dropout: 0.0
 
 trainer:
   frozen_feature_cache:

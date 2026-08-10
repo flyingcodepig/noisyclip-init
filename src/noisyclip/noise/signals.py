@@ -189,19 +189,23 @@ class PrototypeMarginSignal:
 
 @dataclass(frozen=True, slots=True)
 class PredictionStabilitySignal:
-    """Compare current probabilities with previous EMA probabilities.
+    """Measure top-1 prediction agreement over a fixed epoch window.
 
-    Inputs use `output_weak.logits` shaped `[B, C]` and the per-sample state
-    list. When a sample has no previous `ema_probs`, the raw stability is `0`.
-    Otherwise the returned `[B]` value is the probability dot product in
-    `[0, 1]`. Higher values are more trustworthy.
+    Inputs use `output_weak.logits` shaped `[B, C]` and the per-sample top-1
+    prediction history. Samples without a full window receive neutral score
+    `0.5`; otherwise the score is the fraction of entries matching the current
+    prediction. Higher values are more trustworthy.
 
     Raises:
-        ValueError: If previous probability lengths mismatch `C`, shapes are
-            invalid, or values are non-finite.
+        ValueError: If the window, prediction history, shapes, or values are invalid.
     """
 
     name: str = "prediction_stability"
+    window: int = 3
+
+    def __post_init__(self) -> None:
+        if self.window < 1:
+            raise ValueError("window must be positive.")
 
     def compute(
         self,
@@ -215,23 +219,19 @@ class PredictionStabilitySignal:
 
         del output_strong, prototypes
         _validate_batch_size(batch, output_weak, state)
-        probs = output_weak.logits.softmax(dim=1)
-        previous_rows: list[Tensor] = []
+        predictions = output_weak.logits.argmax(dim=1).detach().cpu().tolist()
+        values: list[float] = []
         for index, item in enumerate(state):
-            if item.ema_probs is None:
-                previous_rows.append(torch.zeros_like(probs[index]))
-                continue
-            if len(item.ema_probs) != probs.shape[1]:
-                raise ValueError(
-                    "ema_probs length must match logits class dimension for "
-                    f"sample_id={item.sample_id}."
+            values.append(
+                prediction_stability_from_history(
+                    item.prediction_history,
+                    current=predictions[index],
+                    window=self.window,
                 )
-            previous = torch.tensor(item.ema_probs, dtype=probs.dtype, device=probs.device)
-            previous_rows.append(previous)
-        previous_probs = torch.stack(previous_rows, dim=0)
-        values = (probs * previous_probs).sum(dim=1)
-        _require_finite_vector(values, field_name=self.name)
-        return values
+            )
+        result = output_weak.logits.new_tensor(values)
+        _require_finite_vector(result, field_name=self.name)
+        return result
 
 
 def update_prediction_history(
@@ -240,6 +240,7 @@ def update_prediction_history(
     *,
     epoch: int,
     momentum: float = 0.9,
+    history_window: int = 3,
 ) -> list[SampleState]:
     """Update per-sample probability EMA and observation count once per epoch.
 
@@ -248,10 +249,12 @@ def update_prediction_history(
         logits: Finite model logits shaped `[N, C]`.
         epoch: Non-negative epoch recorded in returned states.
         momentum: Probability EMA coefficient in `[0, 1)`.
+        history_window: Number of recent top-1 predictions to retain.
 
     Returns:
         New states preserving input order, with normalized `ema_probs`,
-        `seen_count + 1`, and `updated_epoch=epoch`.
+        bounded top-1 prediction history, `seen_count + 1`, and
+        `updated_epoch=epoch`.
 
     Raises:
         ValueError: If IDs, shapes, epoch, momentum, previous probability
@@ -262,6 +265,8 @@ def update_prediction_history(
         raise ValueError(f"epoch must be non-negative, got {epoch}.")
     if not 0.0 <= momentum < 1.0:
         raise ValueError(f"momentum must be in [0, 1), got {momentum}.")
+    if history_window < 1:
+        raise ValueError("history_window must be positive.")
     if logits.ndim != 2 or logits.shape[0] != len(states) or logits.shape[1] <= 0:
         raise ValueError(
             f"logits must have shape [{len(states)}, C] with C > 0, got {tuple(logits.shape)}."
@@ -294,15 +299,39 @@ def update_prediction_history(
                 raise ValueError(f"ema_probs must sum to 1 for sample_id={state.sample_id}.")
             history = momentum * previous + (1.0 - momentum) * current
         history = history / history.sum()
+        prior_predictions = (
+            state.prediction_history[-(history_window - 1) :] if history_window > 1 else []
+        )
+        prediction_history = [*prior_predictions, int(current.argmax().item())]
         updated.append(
             replace(
                 state,
                 seen_count=state.seen_count + 1,
                 ema_probs=history.tolist(),
+                prediction_history=prediction_history,
                 updated_epoch=epoch,
             )
         )
     return updated
+
+
+def prediction_stability_from_history(
+    history: list[int],
+    *,
+    current: int,
+    window: int,
+) -> float:
+    """Return fixed-window top-1 agreement, or neutral score before warmup."""
+
+    if window < 1:
+        raise ValueError("window must be positive.")
+    if current < 0 or any(value < 0 for value in history):
+        raise ValueError("prediction indices must be non-negative.")
+    prior = history[-(window - 1) :] if window > 1 else []
+    values = [*prior, current]
+    if len(values) < window:
+        return 0.5
+    return sum(value == current for value in values) / window
 
 
 def _validate_batch_size(batch: Batch, output_weak: ModelOutput, state: list[SampleState]) -> None:

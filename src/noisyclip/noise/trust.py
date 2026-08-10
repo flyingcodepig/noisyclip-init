@@ -32,6 +32,7 @@ class ClasswiseTrustAggregator:
             `raw_signals`.
         supervised_weight_min: Lower bound for continuous weights.
         supervised_weight_max: Upper bound for continuous weights.
+        normalize_within_class: Rank signals per class when true, globally when false.
 
     `records` are ordered samples with train/validation `target` values in
     `[0, C)`. Each raw signal is a `[N]` tensor. The output list preserves
@@ -46,6 +47,7 @@ class ClasswiseTrustAggregator:
     signal_coefficients: Mapping[str, float]
     supervised_weight_min: float = 0.0
     supervised_weight_max: float = 1.0
+    normalize_within_class: bool = True
 
     def __post_init__(self) -> None:
         """Validate coefficient and supervised-weight ranges."""
@@ -103,6 +105,7 @@ class ClasswiseTrustAggregator:
             coefficients,
             supervised_weight_min=noise_config.weights.suspicious,
             supervised_weight_max=noise_config.weights.trusted,
+            normalize_within_class=noise_config.normalize_within_class,
         )
 
     def update_epoch(
@@ -143,10 +146,14 @@ class ClasswiseTrustAggregator:
             raw = raw_signals[name].detach().to(torch.float32)
             _validate_raw_signal(raw, expected_count=len(records), name=name)
             validated_raw_signals[name] = raw
+            normalization_targets = (
+                targets if self.normalize_within_class else torch.zeros_like(targets)
+            )
+            normalization_class_count = num_classes if self.normalize_within_class else 1
             normalized = percentile_rank_by_class(
                 raw,
-                targets,
-                num_classes,
+                normalization_targets,
+                normalization_class_count,
                 higher_is_better=SIGNAL_HIGHER_IS_BETTER[name],
             )
             normalized_signals[name] = normalized

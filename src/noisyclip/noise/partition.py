@@ -126,6 +126,42 @@ def apply_partitions(
     return updated
 
 
+def apply_supervision_weights(
+    states: Sequence[SampleState],
+    *,
+    trusted: float,
+    uncertain_min: float,
+    uncertain_max: float,
+    suspicious: float,
+    epoch: int,
+) -> list[SampleState]:
+    """Map partitions and trust scores to non-curricular base weights."""
+
+    if not 0.0 <= suspicious <= uncertain_min <= uncertain_max <= trusted <= 1.0:
+        raise ValueError(
+            "supervision weights must satisfy "
+            "0 <= suspicious <= uncertain_min <= uncertain_max <= trusted <= 1"
+        )
+    if epoch < 0:
+        raise ValueError("epoch must be non-negative.")
+    updated: list[SampleState] = []
+    for state in states:
+        if state.partition == "trusted":
+            weight = trusted
+        elif state.partition == "suspicious":
+            weight = suspicious
+        elif state.partition == "uncertain":
+            weight = uncertain_min + (uncertain_max - uncertain_min) * state.trust_score
+        else:
+            raise ValueError(
+                f"Invalid partition for sample_id={state.sample_id}: {state.partition!r}."
+            )
+        updated.append(
+            replace(state, supervised_weight=float(weight), updated_epoch=epoch)
+        )
+    return updated
+
+
 def _validate_ids(sample_ids: Sequence[str]) -> list[str]:
     ids = list(sample_ids)
     if not ids:
