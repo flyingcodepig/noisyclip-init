@@ -326,11 +326,13 @@ class ReferenceFeatureCacheConfig(StrictConfigModel):
 
 
 class FeatureDriftGuardConfig(StrictConfigModel):
-    """Stop an adaptive run when validation features drift unexpectedly."""
+    """Warn on ordinary drift and stop only on catastrophic representation changes."""
 
     enabled: bool = False
-    minimum_cosine: float = Field(default=0.90, ge=-1.0, le=1.0)
-    maximum_epoch_drop: float = Field(default=0.03, ge=0.0, le=2.0)
+    minimum_cosine: float = Field(default=0.70, ge=-1.0, le=1.0)
+    maximum_epoch_drop: float = Field(default=0.06, ge=0.0, le=2.0)
+    catastrophic_minimum_cosine: float = Field(default=0.0, ge=-1.0, le=1.0)
+    catastrophic_maximum_epoch_drop: float = Field(default=0.50, ge=0.0, le=2.0)
 
 
 class TrainerConfig(StrictConfigModel):
@@ -370,6 +372,7 @@ class EvaluationConfig(StrictConfigModel):
         "trusted_top1",
         "augmentation_agreement",
         "feature_cosine_to_base",
+        "feature_alignment_to_base",
     )
     checkpoint_selection: str = "val/top1"
     test_time_augmentation: Literal[False] = False

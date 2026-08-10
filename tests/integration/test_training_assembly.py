@@ -265,6 +265,8 @@ def test_b2_full_run_uses_reference_cache_and_writes_required_audits(tmp_path: P
         "enabled": True,
         "minimum_cosine": -1.0,
         "maximum_epoch_drop": 2.0,
+        "catastrophic_minimum_cosine": -1.0,
+        "catastrophic_maximum_epoch_drop": 2.0,
     }
     b2_config = load_config_from_mapping(raw)
     b2_path = tmp_path / "b2.yaml"
@@ -293,10 +295,13 @@ def test_b2_full_run_uses_reference_cache_and_writes_required_audits(tmp_path: P
     assert result.global_step == 4
     assert checkpoint["global_step"] == 4
     assert evaluated.metrics["val/feature_cosine_to_base"] is not None
+    assert evaluated.metrics["val/feature_alignment_to_base"] is not None
     assert merge_report["valid"] is True
     assert all(".lora_" not in key for key in package["model_state"])
     assert inference.logits.shape == (2, 3)
     assert epoch_metrics["val/feature_cosine_to_base"] is not None
+    assert epoch_metrics["val/feature_alignment_to_base"] is not None
+    assert epoch_metrics["val/feature_drift_warning"] in (0.0, 1.0)
     assert "train/loss/ce" in epoch_metrics
     assert "train/top1" in epoch_metrics
     assert "diagnostic/train_val_top1_gap" in epoch_metrics

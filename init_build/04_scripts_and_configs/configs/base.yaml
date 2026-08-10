@@ -163,6 +163,7 @@ evaluation:
     - trusted_top1
     - augmentation_agreement
     - feature_cosine_to_base
+    - feature_alignment_to_base
   checkpoint_selection: val/top1
   test_time_augmentation: false
 

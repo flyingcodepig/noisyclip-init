@@ -6,6 +6,7 @@ import pytest
 import torch
 
 from noisyclip.metrics.classification import compute_classification_metrics
+from noisyclip.metrics.drift import feature_cosine_to_base
 from noisyclip.metrics.robustness import augmentation_agreement, trusted_subset_top1
 
 
@@ -45,3 +46,19 @@ def test_trusted_and_augmentation_metrics_return_nullable_reasons() -> None:
     assert trusted_subset_top1(logits, targets, None).value is None
     assert augmentation_agreement(logits, None).reason == "strong-view logits unavailable"
     assert augmentation_agreement(logits, logits).value == 1.0
+
+
+def test_feature_drift_reports_raw_cosine_and_mapped_alignment_separately() -> None:
+    """Metric names expose raw cosine without losing the legacy alignment score."""
+
+    student = torch.tensor([[1.0, 0.0], [0.0, 1.0]])
+    base = torch.tensor([[1.0, 0.0], [0.0, -1.0]])
+    drift = feature_cosine_to_base(student, base)
+
+    assert drift.cosine == pytest.approx(0.0)
+    assert drift.alignment == pytest.approx(0.5)
+
+    unavailable = feature_cosine_to_base(student, None)
+    assert unavailable.cosine is None
+    assert unavailable.alignment is None
+    assert unavailable.reason == "base CLIP embeddings unavailable"

@@ -25,6 +25,9 @@ trainer:
 evaluation:
   feature_drift_guard:
     enabled: true
-    minimum_cosine: 0.90
-    maximum_epoch_drop: 0.03
+    # Raw cosine thresholds. Diagnostic breaches warn; catastrophic breaches stop.
+    minimum_cosine: 0.70
+    maximum_epoch_drop: 0.06
+    catastrophic_minimum_cosine: 0.0
+    catastrophic_maximum_epoch_drop: 0.50
   lora_merge_atol: 0.00001

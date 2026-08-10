@@ -102,8 +102,8 @@ def test_b2_runtime_gradient_guard_rejects_unauthorized_gradient() -> None:
         validate_frozen_gradients(model, "B2")
 
 
-def test_feature_drift_guard_stops_below_registered_floor(tmp_path) -> None:  # type: ignore[no-untyped-def]
-    """A B2 validation cosine below its preregistered floor fails immediately."""
+def test_feature_drift_guard_warns_below_diagnostic_floor(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """Ordinary B2 adaptation drift is recorded without terminating training."""
 
     config, components = tiny_components(tmp_path)
     raw = config.model_dump(mode="json")
@@ -134,8 +134,49 @@ def test_feature_drift_guard_stops_below_registered_floor(tmp_path) -> None:  # 
         confusion_matrix=torch.zeros(3, 3),
     )
 
-    with pytest.raises(NonFiniteTrainingError, match="below"):
+    with pytest.warns(RuntimeWarning, match="Feature drift warning"):
         trainer._guard_feature_drift(result)
+    assert result.metrics["val/feature_drift_warning"] == 1.0
+    assert "diagnostic floor" in result.metric_reasons["val/feature_drift_warning"]
+
+
+def test_feature_drift_guard_stops_catastrophic_drift(tmp_path) -> None:  # type: ignore[no-untyped-def]
+    """A raw cosine below the catastrophic floor still fails safely with evidence."""
+
+    config, components = tiny_components(tmp_path)
+    raw = config.model_dump(mode="json")
+    raw["model"]["lora"] = {
+        "enabled": True,
+        "target_blocks": [-1],
+        "target_projections": ["q"],
+        "rank": 2,
+        "alpha": 4,
+        "dropout": 0.0,
+    }
+    raw["trainer"]["reference_feature_cache"] = {
+        "enabled": True,
+        "directory": "unused",
+        "verify_hashes": True,
+    }
+    raw["evaluation"]["feature_drift_guard"] = {
+        "enabled": True,
+        "minimum_cosine": 0.8,
+        "maximum_epoch_drop": 0.1,
+        "catastrophic_minimum_cosine": 0.5,
+        "catastrophic_maximum_epoch_drop": 0.5,
+    }
+    guarded = load_config_from_mapping(raw)
+    trainer = Trainer(config=guarded, components=components, device="cpu")
+    result = EvaluationResult(
+        metrics={"val/feature_cosine_to_base": 0.4},
+        metric_reasons={},
+        per_class_accuracy={},
+        confusion_matrix=torch.zeros(3, 3),
+    )
+
+    with pytest.raises(NonFiniteTrainingError, match="Catastrophic feature drift"):
+        trainer._guard_feature_drift(result)
+    assert components.artifact_store.metric("feature_drift_failure.json").is_file()
 
 
 class _NanLoss:

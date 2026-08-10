@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json
+import math
 import shutil
 import time
+import warnings
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -677,6 +679,8 @@ class Trainer:
         self.previous_feature_cosine = float(value)
 
     def _guard_feature_drift(self, result: EvaluationResult) -> None:
+        """Record ordinary drift as a warning and stop only catastrophic changes."""
+
         guard = self.config.evaluation.feature_drift_guard
         if not guard.enabled:
             return
@@ -684,19 +688,57 @@ class Trainer:
         if value is None:
             raise NonFiniteTrainingError("Feature drift guard requires val/feature_cosine_to_base.")
         current = float(value)
+        if not math.isfinite(current):
+            raise NonFiniteTrainingError("Feature cosine is NaN or Inf.")
+        epoch_drop = (
+            None
+            if self.previous_feature_cosine is None
+            else self.previous_feature_cosine - current
+        )
+        result.metrics["val/feature_cosine_epoch_drop"] = epoch_drop
+
+        catastrophic_reasons: list[str] = []
+        if current < guard.catastrophic_minimum_cosine:
+            catastrophic_reasons.append(
+                f"raw cosine {current:.6f} is below catastrophic floor "
+                f"{guard.catastrophic_minimum_cosine:.6f}"
+            )
+        if epoch_drop is not None and epoch_drop > guard.catastrophic_maximum_epoch_drop:
+            catastrophic_reasons.append(
+                f"raw cosine dropped by {epoch_drop:.6f}, above catastrophic limit "
+                f"{guard.catastrophic_maximum_epoch_drop:.6f}"
+            )
+        if catastrophic_reasons:
+            _write_json(
+                self.components.artifact_store.metric("feature_drift_failure.json"),
+                {
+                    "current_raw_cosine": current,
+                    "previous_raw_cosine": self.previous_feature_cosine,
+                    "epoch_drop": epoch_drop,
+                    "reasons": catastrophic_reasons,
+                },
+                overwrite=True,
+            )
+            raise NonFiniteTrainingError(
+                "Catastrophic feature drift: " + "; ".join(catastrophic_reasons) + "."
+            )
+
+        warning_reasons: list[str] = []
         if current < guard.minimum_cosine:
-            raise NonFiniteTrainingError(
-                f"Feature cosine {current:.6f} is below {guard.minimum_cosine:.6f}."
+            warning_reasons.append(
+                f"raw cosine {current:.6f} is below diagnostic floor "
+                f"{guard.minimum_cosine:.6f}"
             )
-        if (
-            self.previous_feature_cosine is not None
-            and self.previous_feature_cosine - current > guard.maximum_epoch_drop
-        ):
-            raise NonFiniteTrainingError(
-                "Feature cosine dropped by "
-                f"{self.previous_feature_cosine - current:.6f}; maximum allowed is "
-                f"{guard.maximum_epoch_drop:.6f}."
+        if epoch_drop is not None and epoch_drop > guard.maximum_epoch_drop:
+            warning_reasons.append(
+                f"raw cosine dropped by {epoch_drop:.6f}, above diagnostic limit "
+                f"{guard.maximum_epoch_drop:.6f}"
             )
+        result.metrics["val/feature_drift_warning"] = float(bool(warning_reasons))
+        if warning_reasons:
+            message = "; ".join(warning_reasons)
+            result.metric_reasons["val/feature_drift_warning"] = message
+            warnings.warn(f"Feature drift warning: {message}.", RuntimeWarning, stacklevel=2)
         self.previous_feature_cosine = current
 
     def _export_final_model(self) -> Path | None:

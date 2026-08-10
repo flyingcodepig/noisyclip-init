@@ -87,7 +87,8 @@ class Evaluator:
                 embeddings `[D]` for drift.
 
         Returns:
-            `EvaluationResult` with metric values in `[0, 1]` or `None`.
+            `EvaluationResult` with classification/alignment values in `[0, 1]`,
+            raw cosine in `[-1, 1]`, or `None` when unavailable.
 
         Raises:
             ValueError: If a validation batch is unlabeled or tensors are
@@ -153,16 +154,19 @@ class Evaluator:
             "val/bottom_quartile_accuracy": classification.bottom_quartile_accuracy.value,
             "val/trusted_top1": trusted_subset_top1(logits_all, targets_all, trusted_mask).value,
             "val/augmentation_agreement": augmentation_agreement(logits_all, strong_logits).value,
-            "val/feature_cosine_to_base": drift.value,
+            "val/feature_cosine_to_base": drift.cosine,
+            "val/feature_alignment_to_base": drift.alignment,
         }
         reasons = _collect_reasons(classification)
         for name, value in (
             ("val/trusted_top1", trusted_subset_top1(logits_all, targets_all, trusted_mask)),
             ("val/augmentation_agreement", augmentation_agreement(logits_all, strong_logits)),
-            ("val/feature_cosine_to_base", drift),
         ):
             if value.value is None and value.reason is not None:
                 reasons[name] = value.reason
+        if drift.cosine is None and drift.reason is not None:
+            reasons["val/feature_cosine_to_base"] = drift.reason
+            reasons["val/feature_alignment_to_base"] = drift.reason
         return EvaluationResult(
             metrics=result_metrics,
             metric_reasons=reasons,
