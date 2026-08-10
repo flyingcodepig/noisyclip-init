@@ -46,6 +46,7 @@ def feature_cache_signature(
     data_digest: str,
     class_mapping_digest: str,
     clip_weight_sha256: str,
+    cache_epochs: int | None = None,
 ) -> str:
     """Hash only inputs that determine frozen embeddings, shared by B0 and B1."""
 
@@ -56,11 +57,37 @@ def feature_cache_signature(
             "class_mapping_digest": class_mapping_digest,
             "clip_weight_sha256": clip_weight_sha256,
             "seed": config.experiment.seed,
-            "epochs": config.trainer.epochs,
+            "epochs": config.trainer.epochs if cache_epochs is None else cache_epochs,
             "data": config.data.model_dump(mode="json"),
             "backbone": config.model.backbone.model_dump(mode="json"),
             "feature_dtype": "float32",
         }
+    )
+
+
+def reference_feature_cache_signature(
+    root: Path | str,
+    config: ProjectConfig,
+    *,
+    data_digest: str,
+    class_mapping_digest: str,
+    clip_weight_sha256: str,
+) -> str:
+    """Validate a reference cache independently of the adaptive run's epoch budget."""
+
+    metadata_path = Path(root).resolve() / "metadata.json"
+    if not metadata_path.is_file():
+        raise FeatureCacheError(f"Feature cache metadata is missing: {metadata_path}")
+    metadata = cast(dict[str, Any], json.loads(metadata_path.read_text(encoding="utf-8")))
+    cache_epochs = metadata.get("epochs")
+    if isinstance(cache_epochs, bool) or not isinstance(cache_epochs, int) or cache_epochs < 1:
+        raise FeatureCacheError("Feature cache epoch metadata is malformed.")
+    return feature_cache_signature(
+        config,
+        data_digest=data_digest,
+        class_mapping_digest=class_mapping_digest,
+        clip_weight_sha256=clip_weight_sha256,
+        cache_epochs=cache_epochs,
     )
 
 

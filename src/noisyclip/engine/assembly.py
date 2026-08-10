@@ -25,6 +25,7 @@ from noisyclip.data.feature_cache import (
     feature_cache_signature,
     load_feature_tensor,
     load_reference_feature_cache,
+    reference_feature_cache_signature,
 )
 from noisyclip.data.image_io import build_image_loader
 from noisyclip.data.leakage import check_root_boundaries
@@ -697,7 +698,8 @@ def _load_reference_cache(
     if not cache.enabled:
         return None
     root = _concrete_path(str(cache.directory), "trainer.reference_feature_cache.directory")
-    signature = feature_cache_signature(
+    signature = reference_feature_cache_signature(
+        root,
         config,
         data_digest=data_digest_value,
         class_mapping_digest=class_mapping_digest,

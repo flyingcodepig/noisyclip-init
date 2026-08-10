@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+import pytest
 import torch
 from PIL import Image
 from torch import nn
@@ -13,6 +14,7 @@ from torch import nn
 from noisyclip.config.loader import load_config_from_mapping, write_resolved_config
 from noisyclip.config.schema import ProjectConfig
 from noisyclip.data.catalog import build_class_catalog, write_class_mapping
+from noisyclip.data.feature_cache import FeatureCacheError
 from noisyclip.data.manifests import make_sample_id, write_manifest
 from noisyclip.data.records import SampleRecord
 from noisyclip.engine.assembly import (
@@ -256,6 +258,9 @@ def test_b2_full_run_uses_reference_cache_and_writes_required_audits(tmp_path: P
         "directory": str(feature_root),
         "verify_hashes": True,
     }
+    # Reference features are deterministic eval embeddings and can be reused
+    # across adaptive runs with a different epoch budget.
+    raw["trainer"]["epochs"] = 2
     raw["evaluation"]["feature_drift_guard"] = {
         "enabled": True,
         "minimum_cosine": -1.0,
@@ -269,9 +274,13 @@ def test_b2_full_run_uses_reference_cache_and_writes_required_audits(tmp_path: P
     run_dir = tmp_path / "runs" / "b2-run"
     evaluated = evaluate_checkpoint(run_dir, result.last_checkpoint, clip_backend=FakeBackend())
     checkpoint = torch.load(result.last_checkpoint, map_location="cpu", weights_only=False)
-    epoch_metrics = json.loads(
-        (run_dir / "metrics" / "epoch_metrics.jsonl").read_text(encoding="utf-8").strip()
-    )
+    epoch_metrics = [
+        json.loads(line)
+        for line in (run_dir / "metrics" / "epoch_metrics.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+        if line.strip()
+    ][-1]
     merge_report = json.loads(
         (run_dir / "metrics" / "lora_merge_equivalence.json").read_text(encoding="utf-8")
     )
@@ -281,8 +290,8 @@ def test_b2_full_run_uses_reference_cache_and_writes_required_audits(tmp_path: P
     )
     inference = reloaded_export(torch.rand(2, 3, 224, 224))
 
-    assert result.global_step == 2
-    assert checkpoint["global_step"] == 2
+    assert result.global_step == 4
+    assert checkpoint["global_step"] == 4
     assert evaluated.metrics["val/feature_cosine_to_base"] is not None
     assert merge_report["valid"] is True
     assert all(".lora_" not in key for key in package["model_state"])
@@ -300,3 +309,29 @@ def test_b2_full_run_uses_reference_cache_and_writes_required_audits(tmp_path: P
     assert (run_dir / "artifacts" / "initial_prototypes.pt").is_file()
     assert (run_dir / "artifacts" / "final_prototypes.pt").is_file()
     assert (run_dir / "DONE").is_file()
+
+
+def test_reference_cache_still_rejects_embedding_identity_changes(tmp_path: Path) -> None:
+    """Epoch budgets may differ, but image preprocessing identity must still match."""
+
+    config_path, b1_config = _fixture_config(tmp_path, stage="B1", feature_cache=True)
+    feature_root = build_feature_cache_from_config(config_path, clip_backend=FakeBackend())
+    raw = b1_config.model_dump(mode="json")
+    raw["trainer"]["epochs"] = 2
+    raw["trainer"]["frozen_feature_cache"] = {
+        "enabled": False,
+        "directory": None,
+        "verify_hashes": True,
+    }
+    raw["trainer"]["reference_feature_cache"] = {
+        "enabled": True,
+        "directory": str(feature_root),
+        "verify_hashes": True,
+    }
+    raw["data"]["eval_transform"]["resize_short_side"] = 257
+    changed_config = load_config_from_mapping(raw)
+    changed_path = tmp_path / "changed-reference-identity.yaml"
+    write_resolved_config(changed_config, changed_path)
+
+    with pytest.raises(FeatureCacheError, match="identity does not match"):
+        run_training(changed_path, run_id="changed-reference-run", clip_backend=FakeBackend())
