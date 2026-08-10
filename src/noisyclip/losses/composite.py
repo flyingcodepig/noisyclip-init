@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
+import torch
 from torch import Tensor
 
 from noisyclip.config.schema import LossConfig
@@ -46,7 +49,13 @@ class RobustCompositeLoss:
             NaN/Inf.
     """
 
-    def __init__(self, config: LossConfig) -> None:
+    def __init__(
+        self,
+        config: LossConfig,
+        *,
+        sample_ids: Sequence[str] | None = None,
+        history_device: torch.device | str | None = None,
+    ) -> None:
         self.config = config
         self.ce = WeightedCrossEntropyLoss(
             label_smoothing=config.cross_entropy.label_smoothing,
@@ -55,6 +64,8 @@ class RobustCompositeLoss:
             target_momentum=config.elr.target_momentum,
             start_epoch=config.elr.start_epoch,
             enabled=config.elr.enabled,
+            sample_ids=sample_ids,
+            history_device=history_device,
         )
         self.consistency = ConsistencyLoss(
             temperature=config.consistency.temperature,

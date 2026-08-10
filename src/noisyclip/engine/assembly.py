@@ -217,7 +217,11 @@ def assemble_trainer(
             )
         optimizer = _build_optimizer(config, model)
         scheduler = _build_scheduler(config, optimizer, len(train_loader))
-        loss = RobustCompositeLoss(config.loss)
+        loss = RobustCompositeLoss(
+            config.loss,
+            sample_ids=[record.sample_id for record in train_records],
+            history_device=device,
+        )
         state_store = JsonSampleStateStore(
             artifact_store.sample_state_dir(),
             expected_sample_ids=[record.sample_id for record in train_records],
