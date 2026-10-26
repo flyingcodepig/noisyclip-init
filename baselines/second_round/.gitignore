@@ -1,0 +1,18 @@
+# Competition data and generated outputs remain local.
+code/data/*
+code/cache/
+code/image_cache/
+code/inference_cache/
+code/runs/
+results/
+*赛题结果文档*/
+*.npy
+*.npz
+*.csv
+*.zip
+*.7z*
+*.pt
+*.pth
+*.bin
+*.safetensors
+__pycache__/

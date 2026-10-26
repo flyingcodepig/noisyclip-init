@@ -1,0 +1,67 @@
+{
+  "batch": 48,
+  "workers": 6,
+  "total_steps": 3072,
+  "warmup_fraction": 0.024,
+  "save_every": 512,
+  "scale": 30,
+  "lr_head": 0.000468,
+  "wd": 0.048,
+  "mix_probability": 0.21,
+  "mix_alpha": 0.19,
+  "supcon_temperature": 0.12,
+  "size": 448,
+  "seed": 41362,
+  "foreground_fraction": 0.24,
+  "patch_temperature": 0.135,
+  "gate_bound": 0.28,
+  "lr_backbone": 1.364e-05,
+  "lr_mechanism": 0.000528,
+  "gce_q": 0.72,
+  "l2sp": 0.0059,
+  "drift": 0.033,
+  "drift_kind": "l2",
+  "supcon": 0.024,
+  "rrc_min": 0.73,
+  "wideshot_p": 0.13,
+  "wideshot_scale": [
+    0.37,
+    0.81
+  ],
+  "feather": 8.0,
+  "jitter": 0.16,
+  "views": [
+    [
+      "complete",
+      1.0,
+      false
+    ],
+    [
+      "center",
+      1.0,
+      false
+    ],
+    [
+      "center",
+      0.86,
+      true
+    ]
+  ],
+  "neighbors": 28,
+  "graph_alpha": 0.88,
+  "graph_iterations": 4,
+  "epsilon": 0.29,
+  "temperature": 2.6,
+  "augmentation_mode": "worker_stream",
+  "cache_kind": "center",
+  "alternate_complete_probability": 0.46,
+  "randaug_n": 1,
+  "randaug_m": 5,
+  "gce_ce_floor": 0.025,
+  "global_supcon": true,
+  "cutmix_probability": 0.29,
+  "cutmix_alpha": 0.76,
+  "candidate_labels": "cache/train_candidate_labels.npy",
+  "candidate_labels_sha256": "b5d56e676b1c0b438bbe8bde96dbc95e0c7895aaae45dece4c6ce1691bf8ef79",
+  "preserve_optimizer": true
+}

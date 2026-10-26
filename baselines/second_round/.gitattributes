@@ -1,0 +1,4 @@
+# Preserve the exact baseline source bytes recorded in source_manifest.json.
+*.md text eol=lf
+*.json text eol=lf
+code/** -text
