@@ -1,0 +1,13 @@
+{
+  "folds": 3,
+  "seed": 42,
+  "ridge": 1.0,
+  "temperature": 0.1,
+  "neighbors": 10,
+  "neighbor_temperature": 0.1,
+  "minimum_trust": 0.1,
+  "correction_threshold": 0.5,
+  "batch": 256,
+  "threads": 4,
+  "device": "cpu"
+}

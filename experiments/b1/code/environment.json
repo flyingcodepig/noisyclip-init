@@ -1,0 +1,17 @@
+{
+  "python": "3.12",
+  "torch": "2.13.0+cu130",
+  "torchvision": "0.28.0+cu130",
+  "transformers": "5.15.0",
+  "numpy": "2.5.2",
+  "pillow": "12.3.0",
+  "cuda": "13.0",
+  "tf32": false,
+  "attention": "SDPBackend.MATH",
+  "inference_precision": "bfloat16",
+  "training_runtime_target": {
+    "gpu_model": "NVIDIA RTX 5090",
+    "gpu_count": 4,
+    "visible_devices": "0,1,2,3"
+  }
+}

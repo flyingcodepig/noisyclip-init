@@ -1,0 +1,8 @@
+{
+  "expected_sha256": {
+    "engine/train_teacher.npy": "e94e603c470fe8a37f88ec84d4efca7541a0ca4350348e37fcad8f3699da53bc",
+    "engine/train_labels.npy": "2b0ce232fdba53c4a7e2f42335420cf79a851c28f3a8de1fc7c2df4b5666751a",
+    "engine/initial_centers.npy": "fe71988e27b1f10c1d8a31b0efb5026706128936bcc5e8fb181b2cdc8d4a3b36",
+    "cache/train_candidate_labels.npy": "b5d56e676b1c0b438bbe8bde96dbc95e0c7895aaae45dece4c6ce1691bf8ef79"
+  }
+}

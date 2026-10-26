@@ -1,0 +1,46 @@
+{
+  "kind": "sparse_patch_contrast_confidence_graph",
+  "temperature": 2.85,
+  "view_weights": [
+    0.23,
+    0.16,
+    0.21,
+    0.4
+  ],
+  "head_prior_fraction": 0.06,
+  "epsilon": 0.39,
+  "neighbors": 22,
+  "sharpness": 41,
+  "local_fraction": 0.22,
+  "local_rank": 5,
+  "nonmutual_fraction": 0.69,
+  "confidence_power": 1.0,
+  "alpha": 0.984,
+  "iterations": 8,
+  "minimum_propagation": 0.63,
+  "balance_strength": 1.0,
+  "assignment_iterations": 100,
+  "assignment_temperature": 0.78,
+  "classification_views": [
+    [
+      "complete",
+      1.0,
+      false
+    ],
+    [
+      "center",
+      1.0,
+      false
+    ],
+    [
+      "center",
+      0.86,
+      true
+    ],
+    [
+      "center",
+      0.74,
+      false
+    ]
+  ]
+}

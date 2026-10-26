@@ -1,0 +1,69 @@
+{
+  "batch": 48,
+  "workers": 6,
+  "total_steps": 4096,
+  "warmup_fraction": 0.028,
+  "save_every": 512,
+  "scale": 30,
+  "lr_head": 0.00072,
+  "wd": 0.048,
+  "mix_probability": 0.27,
+  "mix_alpha": 0.19,
+  "supcon_temperature": 0.12,
+  "size": 448,
+  "seed": 41291,
+  "foreground_fraction": 0.24,
+  "patch_temperature": 0.135,
+  "gate_bound": 0.28,
+  "lr_backbone": 3.1e-05,
+  "lr_mechanism": 0.00088,
+  "gce_q": 0.72,
+  "l2sp": 0.0068,
+  "drift": 0.045,
+  "drift_kind": "huber",
+  "supcon": 0.031,
+  "rrc_min": 0.7,
+  "wideshot_p": 0.17,
+  "wideshot_scale": [
+    0.37,
+    0.81
+  ],
+  "feather": 8.0,
+  "jitter": 0.2,
+  "views": [
+    [
+      "complete",
+      1.0,
+      false
+    ],
+    [
+      "center",
+      1.0,
+      false
+    ],
+    [
+      "center",
+      0.86,
+      true
+    ]
+  ],
+  "neighbors": 28,
+  "graph_alpha": 0.88,
+  "graph_iterations": 4,
+  "epsilon": 0.29,
+  "temperature": 2.6,
+  "augmentation_mode": "worker_stream",
+  "cache_kind": "center",
+  "alternate_complete_probability": 0.46,
+  "randaug_n": 1,
+  "randaug_m": 5,
+  "gce_ce_floor": 0.025,
+  "global_supcon": true,
+  "cutmix_probability": 0.27,
+  "cutmix_alpha": 0.76,
+  "unfreeze_last_blocks": 4,
+  "layer_lr_decay": 0.8,
+  "head_warmup_steps": 512,
+  "consistency": 0.5,
+  "trusted_threshold": 0.5
+}
