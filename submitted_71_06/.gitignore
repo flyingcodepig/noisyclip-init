@@ -1,0 +1,16 @@
+__pycache__/
+*.pyc
+*.restoring
+code/train.zip
+code/test.zip
+code/image_cache/
+code/runs/
+reproduced_results*/
+/code/data/train_index.json
+/code/data/test_names.json
+/code/cache/train_candidate_labels.npy
+/code/weights/clip-vit-base-patch32/pytorch_model.bin
+/model/model.pt
+/model/stage1_model.pt
+/results/pred_results.csv
+/results/pred_results.zip

@@ -1,0 +1,14 @@
+{
+  "python": "3.12.3",
+  "torch": "2.12.1+cu130",
+  "transformers": "4.57.1",
+  "numpy": "2.4.6",
+  "pillow": "12.2.0",
+  "gpu": "NVIDIA GeForce RTX 4090",
+  "microbatch": 48,
+  "gradient_accumulation": 4,
+  "effective_batch": 192,
+  "contrast_scope": "microbatch of 48; original four-GPU global scope was 192",
+  "train_rows": 90197,
+  "classes": 500
+}

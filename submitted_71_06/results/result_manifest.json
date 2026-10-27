@@ -1,0 +1,9 @@
+{
+  "rows": 49857,
+  "method": "same trained model, weighted four-view posterior, without graph or class balancing",
+  "csv_sha256": "996e481af5b93d982cf483fc7cdf56ce177f2e17c7fa6c40ee874ac6ac7cd73d",
+  "zip_sha256": "4e0d519328cdd7d94a036d424db6f71830e24e37bd8c74ff55aac7a95556156d",
+  "checkpoint_sha256": "cd30a7d8afb6785d9d889dde65726315cc67b5e56c8ecc1a98ce1da59cc8d3fc",
+  "differences_from_graph": 16900,
+  "note": "Alternative only. Seen-sample validation cannot establish the better method on hidden test labels."
+}

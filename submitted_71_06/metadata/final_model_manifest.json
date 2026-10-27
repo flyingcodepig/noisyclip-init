@@ -1,0 +1,7 @@
+{
+  "model": "runs/stage2/model.pt",
+  "sha256": "cd30a7d8afb6785d9d889dde65726315cc67b5e56c8ecc1a98ce1da59cc8d3fc",
+  "step": 2048,
+  "classes": 500,
+  "training_data": "current semifinal TRAIN only"
+}

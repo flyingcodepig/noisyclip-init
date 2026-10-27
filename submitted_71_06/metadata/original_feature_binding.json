@@ -1,0 +1,28 @@
+{
+  "checkpoint_sha256": "cd30a7d8afb6785d9d889dde65726315cc67b5e56c8ecc1a98ce1da59cc8d3fc",
+  "feature_cache_sha256": "ec6689c5ebbb4c7d63b7f6d7f18ff2b393bba840e4bc540b7618b149b15285ed",
+  "actual_views": [
+    [
+      "complete",
+      1.0,
+      false
+    ],
+    [
+      "center",
+      1.0,
+      false
+    ],
+    [
+      "center",
+      0.86,
+      true
+    ],
+    [
+      "center",
+      0.74,
+      false
+    ]
+  ],
+  "split": "test",
+  "indices_sha256": null
+}

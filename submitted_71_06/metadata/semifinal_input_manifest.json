@@ -1,0 +1,8 @@
+{
+  "train.zip": "cdce76beef9177621daa45339eb271d6e60de0be6167c249e1af62d1a5f08c48",
+  "engine/train_teacher.npy": "0c56d1b85e52d235590928b476196658ebb304214aa973b502756ac3f9eda934",
+  "engine/train_labels.npy": "bf739b7f1f4774e3e2f705e248a598c1e04406cd87f5f30594f0f68f0eb0a962",
+  "engine/initial_centers.npy": "ea02e0dafa355ef34f7ef25922ab0f2ee55c5b342c0eb537021c254f0c2ad55f",
+  "cache/train_candidate_labels.npy": "bef898fd63d1474d2018415e17f643560f21348cf9fdd0c4a08700d078b4fb08",
+  "weights/clip-vit-base-patch32/pytorch_model.bin": "a63082132ba4f97a80bea76823f544493bffa8082296d62d71581a4feff1576f"
+}

@@ -53,3 +53,9 @@ python -m noisyclip.cli.train \
   --run-id b0-seed-20260806 \
   --resume /runs/b0-seed-20260806/checkpoints/last.pt
 ```
+
+## 已提交的 71.06 分版本
+
+用户报告线上成绩 **71.0621387283237** 的原始四视图分类源码位于 [`submitted_71_06/`](submitted_71_06/)。训练、推理配置和归档校验值一并保留。
+
+请先阅读 [源码快照与模型恢复说明](submitted_71_06/SOURCE_EXPORT.md)。大体积模型权重、数据索引和原始预测结果未提交到 Git，使用说明中的脚本从本地完整归档恢复后，再按原版 README 复现。

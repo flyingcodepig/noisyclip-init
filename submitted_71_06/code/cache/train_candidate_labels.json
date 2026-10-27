@@ -1,0 +1,9 @@
+{
+  "rows": 90197,
+  "classes": 500,
+  "max_candidates": 1,
+  "source": "current semifinal TRAIN only, exact-byte SHA256 verified groups",
+  "reference_read": false,
+  "labels_order_verified": true,
+  "candidate_sha256": "bef898fd63d1474d2018415e17f643560f21348cf9fdd0c4a08700d078b4fb08"
+}

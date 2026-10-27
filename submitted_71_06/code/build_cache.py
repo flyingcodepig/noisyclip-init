@@ -1,0 +1,67 @@
+import argparse
+from concurrent.futures import ThreadPoolExecutor
+import json
+from pathlib import Path
+import sys
+import numpy as np
+from PIL import Image, ImageFile, ImageOps
+
+ROOT = Path(__file__).resolve().parent
+sys.path.insert(0,str(ROOT))
+from src.data.image_cache import _load_one, _init_worker
+
+
+def complete(path):
+    with Image.open(path) as im:
+        return np.asarray(ImageOps.pad(im.convert('RGB'),(512,512),method=Image.Resampling.BICUBIC,color=(123,117,104)))
+
+
+def main():
+    p = argparse.ArgumentParser()
+    p.add_argument('--split', choices=('train','test'), required=True)
+    p.add_argument('--workers', type=int, default=16)
+    a = p.parse_args()
+    official = ROOT/'data/official'/a.split
+    if a.split == 'train':
+        index = json.loads((ROOT/'data/train_index.json').read_text())
+        paths = [ROOT/'data/official/train'/r[0] for r in index]
+    else:
+        names = json.loads((ROOT/'data/test_names.json').read_text())['names']
+        paths = [ROOT/'data/official/test'/name for name in names]
+    missing = [str(path.relative_to(ROOT)) for path in paths if not path.is_file()]
+    if missing:
+        raise FileNotFoundError(f'Missing {len(missing)} official images; examples: {missing[:3]}. Place official images under data/official')
+    _init_worker(512)
+    ImageFile.LOAD_TRUNCATED_IMAGES = True
+    out = ROOT/'image_cache'
+    out.mkdir(exist_ok=True)
+    for kind in ('center','complete'):
+        target = out/f"semi_{a.split}{'_complete' if kind=='complete' else ''}_512.npy"
+        temporary = target.with_suffix('.building.npy')
+        if temporary.exists():
+            raise FileExistsError(temporary)
+        if target.exists():
+            cached = np.load(target, mmap_mode='r')
+            assert cached.shape == (len(paths),512,512,3) and cached.dtype == np.uint8
+            print('Existing cache:', target, flush=True)
+            continue
+        array = np.lib.format.open_memmap(temporary,mode='w+',dtype=np.uint8,shape=(len(paths),512,512,3))
+        def decode(path):
+            if kind == 'complete':
+                return complete(path)
+            pixels, ok = _load_one(str(path))
+            if not ok:
+                raise ValueError(f'Cannot decode {path}')
+            return pixels
+        with ThreadPoolExecutor(max_workers=a.workers) as pool:
+            for i,pixels in enumerate(pool.map(decode,paths)):
+                array[i] = pixels
+                if (i+1)%10000 == 0:
+                    print(a.split,kind,i+1,flush=True)
+        array.flush()
+        del array
+        temporary.rename(target)
+
+
+if __name__ == '__main__':
+    main()
