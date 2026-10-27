@@ -103,6 +103,9 @@ def main():
     report['quality_sha256'] = resumed['quality_sha256']
     report['git_revision'] = resumed['git_revision']
     report['stage2_optimizer_preserved_schedule_restarted'] = True
+    report['observed_seconds_per_update_including_loader_and_smoke_checkpoint_io'] = (metrics[-1]['seconds'] - metrics[0]['seconds']) / (metrics[-1]['step'] - metrics[0]['step'])
+    report['training_hours_from_observed_smoke_cadence'] = report['observed_seconds_per_update_including_loader_and_smoke_checkpoint_io'] * 6144 / 3600
+    (folder / 'smoke_report.json').write_text(json.dumps(report, indent=2))
     if not args.no_gate:
         (ROOT / 'cache/a100/smoke_gate.json').write_text(json.dumps(report, indent=2))
     print(json.dumps(report), flush=True)

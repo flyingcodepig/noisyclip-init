@@ -10,7 +10,7 @@ cfg = json.loads(Path(config).read_text())
 ck = torch.load(path, map_location='cpu', weights_only=False)
 assert ck['config'] == cfg
 assert ck['world_size'] == 1
-assert int(target) <= ck['step'] <= cfg['total_steps']
+assert ck['step'] == int(target) or (int(target) == 1536 and ck['step'] == 2048)
 assert ck['data_micro_step'] == ck['step'] * cfg['gradient_accumulation_steps']
 assert ck['accumulation_boundary'] is True
 assert ck['reference_used_for_training'] is False
@@ -25,4 +25,10 @@ assert all(torch.isfinite(t).all() for t in ck['model'].values() if t.is_floatin
 for state in ck['optimizer']['state'].values():
     assert all(torch.isfinite(t).all() for t in state.values() if torch.is_tensor(t))
 assert len(ck['rng']) == 1 and ck['rng'][0]['stream_states']
+for name, expected in ck['training_sources'].items():
+    assert hashlib.sha256((Path(root) / name).read_bytes()).hexdigest() == expected, name
+sys.path.insert(0, str(Path(root) / 'engine'))
+from single_gpu_support import load_model
+model = load_model(Path(root), cfg, Path(root), initialize_official=False)
+model.load_state_dict(ck['model'], strict=True)
 print(json.dumps({'checkpoint_verified': path, 'step': ck['step'], 'quality': h.hexdigest()}))
