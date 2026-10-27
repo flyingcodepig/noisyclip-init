@@ -55,10 +55,14 @@ def main():
                 raise ValueError(f'Cannot decode {path}')
             return pixels
         with ThreadPoolExecutor(max_workers=a.workers) as pool:
-            for i,pixels in enumerate(pool.map(decode,paths)):
-                array[i] = pixels
-                if (i+1)%10000 == 0:
-                    print(a.split,kind,i+1,flush=True)
+            # Bound completed decoded images; Executor.map in Python 3.11 eagerly
+            # submits all 90k images and can otherwise retain tens of GB.
+            for start in range(0, len(paths), a.workers * 4):
+                for offset, pixels in enumerate(pool.map(decode, paths[start:start + a.workers * 4])):
+                    i = start + offset
+                    array[i] = pixels
+                    if (i+1)%10000 == 0:
+                        print(a.split,kind,i+1,flush=True)
         array.flush()
         del array
         temporary.rename(target)

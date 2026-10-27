@@ -44,6 +44,7 @@ cache = cache.replace("out = ROOT/'image_cache'", 'out = a.cache_dir')
 cache = cache.replace("official = ROOT/'data/official'/a.split", "official = Path(json.loads((ROOT/'data/a100/source_manifest.json').read_text())['splits'][a.split]['root'])")
 cache = cache.replace("ROOT/'data/official/train'/r[0]", 'official/r[0]').replace("ROOT/'data/official/test'/name", 'official/name')
 cache = cache.replace('str(path.relative_to(ROOT))', 'str(path)')
+cache = cache.replace("            for i,pixels in enumerate(pool.map(decode,paths)):\n                array[i] = pixels\n                if (i+1)%10000 == 0:\n                    print(a.split,kind,i+1,flush=True)", "            # Bound completed decoded images; Executor.map in Python 3.11 eagerly\n            # submits all 90k images and can otherwise retain tens of GB.\n            for start in range(0, len(paths), a.workers * 4):\n                for offset, pixels in enumerate(pool.map(decode, paths[start:start + a.workers * 4])):\n                    i = start + offset\n                    array[i] = pixels\n                    if (i+1)%10000 == 0:\n                        print(a.split,kind,i+1,flush=True)")
 (ROOT / 'build_cache_a100.py').write_text(cache, encoding='utf-8')
 
 infer = (ROOT / 'engine/infer.py').read_text(encoding='utf-8')
