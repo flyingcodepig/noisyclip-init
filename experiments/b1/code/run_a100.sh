@@ -7,6 +7,7 @@ RUN_PREFIX="${RUN_PREFIX:-a100_20261027}"
 mkdir -p "$HERE/runs"
 exec 9>"$HERE/runs/.a100.lock"
 flock -n 9 || { echo 'Another A100 pipeline holds the lock'; exit 2; }
+"$PYTHON" "$HERE/../deployment/check_smoke_gate.py"
 run_stage() {
   local stage="$1" target="$2"
   shift 2

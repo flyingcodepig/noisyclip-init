@@ -1,5 +1,5 @@
 {
-  "batch": 24,
+  "batch": 192,
   "workers": 6,
   "total_steps": 3072,
   "warmup_fraction": 0.024,
@@ -67,7 +67,7 @@
   "head_warmup_steps": 0,
   "consistency": 0.5,
   "trusted_threshold": 0.5,
-  "gradient_accumulation_steps": 8,
+  "gradient_accumulation_steps": 1,
   "log_every": 5,
   "num_classes": 500,
   "dataset_id": "matpool_semifinal_20261027",

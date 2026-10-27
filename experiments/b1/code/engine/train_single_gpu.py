@@ -56,6 +56,10 @@ def main():
         raise ValueError('Target exceeds scheduler budget')
     ws = Path(args.workspace).resolve()
     assert ws == ROOT
+    import subprocess
+    git_revision = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=ws, text=True).strip()
+    training_sources = {str(p.relative_to(ROOT)): sha(p) for p in [Path(__file__), HERE/'single_gpu_support.py', HERE/'data_stream.py', HERE/'trust_training.py', HERE/'trusted_contrast.py', HERE/'model_base.py', ROOT/'src/model.py', ROOT/'src/data/image_cache.py']}
+
     out = ws / 'runs' / args.run
     if not out.resolve().is_relative_to(ws / 'runs'):
         raise ValueError('Run path escapes runs directory')
@@ -113,6 +117,7 @@ def main():
     if args.resume:
         checkpoint = torch.load(out / 'last.pt', map_location='cpu', weights_only=False)
         assert checkpoint['config'] == cfg and checkpoint['world_size'] == world
+        assert checkpoint['training_sources'] == training_sources, 'Training code changed since checkpoint'
         assert checkpoint.get('quality_sha256') == quality_hash
         model.load_state_dict(checkpoint['model'], strict=True)
         optimizer.load_state_dict(checkpoint['optimizer'])
@@ -156,7 +161,7 @@ def main():
         else:
             rngs[0] = rng
         if rank == 0:
-            state = dict(model=model.state_dict(), optimizer=optimizer.state_dict(), step=step, config=cfg, world_size=world, rng=rngs, official_initialization=True, reference_used_for_training=False, quality_sha256=quality_hash, data_micro_step=step * accum, accumulation_boundary=True)
+            state = dict(model=model.state_dict(), optimizer=optimizer.state_dict(), step=step, config=cfg, world_size=world, rng=rngs, official_initialization=True, reference_used_for_training=False, quality_sha256=quality_hash, data_micro_step=step * accum, accumulation_boundary=True, git_revision=git_revision, training_sources=training_sources)
             torch.save(state, out / 'last.tmp.pt')
             (out / 'last.tmp.pt').replace(out / 'last.pt')
             torch.save(dict(model=state['model'], config=cfg, step=step, quality_sha256=quality_hash), out / 'model.tmp.pt')

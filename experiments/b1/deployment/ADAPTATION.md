@@ -6,7 +6,7 @@
 
 实际输入为 `/mnt/半决赛数据集/train.zip`（90,197 张、500 类）和 `test.zip`（49,857 张）。与原 148,695 张、750 类不同。生成独立 `data/a100` 和 `cache/a100`；不冒用原固定校验值。ZIP CRC、逐图解码与 SHA256、官方 CLIP 权重固定 SHA256、首批特征重复计算、来源绑定和质量文件绑定均需通过。TEST 仅解码与记录文件名，不读取测试标签。
 
-单卡原型 micro-batch=24、累积=8，有效 batch=192；最终取值必须由完整真实数据冒烟确定。双视图仍在未混合 micro-batch 上执行。对比学习池仅为 micro-batch=24，不等于四卡的 192；Mixup/CutMix 也只在 micro-batch 内配对。每个 epoch 丢弃不足一个完整累积组的尾部。每个 micro loss 除以累积次数，每次 optimizer 更新前仅清零一次，累积完成才冻结预热梯度、裁剪、step、保存。checkpoint 只在完整更新边界保存，并记录消费的 micro-step；恢复据此重建 epoch、sampler 偏移及 worker stream。
+双视图实测 micro-batch96 峰值分配9.03GiB、192峰值17.42GiB，因此选择 micro-batch192、累积1、有效batch192进行完整数据冒烟；最终取值仍需通过该冒烟。额外以96×2验证累积与恢复。双视图仍在未混合 micro-batch 上执行。192×1的对比池规模为192，但Mixup/CutMix配对范围与原四卡每卡48仍不同，不能声称完全等价。若OOM降至96×2，对比池也相应降至96，累积不会扩大它。每个epoch丢弃不足一个完整累积组的尾部。每个micro loss除以累积次数，每次optimizer更新前仅清零一次，累积完成才冻结预热梯度、裁剪、step、保存。checkpoint只在完整更新边界保存，并记录消费的micro-step；恢复据此重建epoch、sampler偏移及worker stream。
 
 Stage1：4096 optimizer 更新，head-only 前 512 更新，随机种子 41291。Stage2：保留 optimizer，重启 3072 更新长度的调度，先至1536，再阶段内恢复至2048；head-only=0，种子41362。末端4层、分层学习率、两视图一致性保留。两阶段使用同一质量哈希。
 
