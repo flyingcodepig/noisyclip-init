@@ -33,3 +33,7 @@ for stage, filename in [('stage1', 'train_config_stage1.json'), ('stage2', 'trai
     cfg.update(batch=24, gradient_accumulation_steps=8, workers=6, log_every=5, num_classes=500, dataset_id='matpool_semifinal_20261027')
     (ROOT / f'train_config_a100_{stage}.json').write_text(json.dumps(cfg, indent=2) + '\n')
 
+cache = (ROOT / 'build_cache.py').read_text(encoding='utf-8')
+cache = cache.replace('data/train_index.json', 'data/a100/train_index.json').replace('data/test_names.json', 'data/a100/test_names.json')
+(ROOT / 'build_cache_a100.py').write_text(cache, encoding='utf-8')
+

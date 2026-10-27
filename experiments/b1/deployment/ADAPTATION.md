@@ -1,0 +1,15 @@
+# 矩池云 A100 实际数据适配
+
+原 B1 提交：3999a77b017388a30926bc99aa4a9d92e2cd2100。baseline 与原 B1 配置、训练器、校验配方均保持原样。
+
+用户确认以服务器实际数据为主，所有代码/配置修改在 Windows 本机完成，Git 推送后服务器仅拉取并执行。服务器数据处理程序生成的索引、缓存、日志、checkpoint 属于运行产物。
+
+实际输入为 `/mnt/半决赛数据集/train.zip`（90,197 张、500 类）和 `test.zip`（49,857 张）。与原 148,695 张、750 类不同。生成独立 `data/a100` 和 `cache/a100`；不冒用原固定校验值。ZIP CRC、逐图解码与 SHA256、官方 CLIP 权重固定 SHA256、首批特征重复计算、来源绑定和质量文件绑定均需通过。TEST 仅解码与记录文件名，不读取测试标签。
+
+单卡原型 micro-batch=24、累积=8，有效 batch=192；最终取值必须由完整真实数据冒烟确定。双视图仍在未混合 micro-batch 上执行。对比学习池仅为 micro-batch=24，不等于四卡的 192；Mixup/CutMix 也只在 micro-batch 内配对。每个 epoch 丢弃不足一个完整累积组的尾部。每个 micro loss 除以累积次数，每次 optimizer 更新前仅清零一次，累积完成才冻结预热梯度、裁剪、step、保存。checkpoint 只在完整更新边界保存，并记录消费的 micro-step；恢复据此重建 epoch、sampler 偏移及 worker stream。
+
+Stage1：4096 optimizer 更新，head-only 前 512 更新，随机种子 41291。Stage2：保留 optimizer，重启 3072 更新长度的调度，先至1536，再阶段内恢复至2048；head-only=0，种子41362。末端4层、分层学习率、两视图一致性保留。两阶段使用同一质量哈希。
+
+服务器 A100-PCIE-40GB、驱动570.211.01；保留已有 Python3.11.13、torch2.6.0+cu124、torchvision0.21.0+cu124，隔离 venv `/root/b1-env-20261027` 添加 transformers4.48.3。环境最终版本以运行时 pip freeze 为准。未升级系统驱动。
+
+原始图与可重建的大缓存放系统盘；代码、来源/特征/质量文件、日志与 checkpoint 放 `/mnt/noisyclip-b1-20261027` 持久网盘。机器释放会丢失系统盘数据，届时必须重新准备。尚未完成真实完整训练/恢复测试前，不可声称适配已验证或效果超过71分。
