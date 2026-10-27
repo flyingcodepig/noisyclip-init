@@ -75,12 +75,6 @@ def main():
             if path.exists() and path.read_text() != text:
                 raise ValueError(f'Existing manifest differs: {path}')
             path.write_text(text)
-        link = ROOT / 'data/official' / split
-        link.parent.mkdir(parents=True, exist_ok=True)
-        if link.exists():
-            assert link.resolve() == target.resolve()
-        else:
-            link.symlink_to(target, target_is_directory=True)
         manifest['splits'][split] = {'archive_sha256': archive_hash, 'rows': len(rows), 'root': str(target), 'index_sha256': sha(out / index_name), 'image_manifest_sha256': sha(out / f'{split}_sha256.json')}
     (out / 'source_manifest.json').write_text(json.dumps(manifest, indent=2))
     print(json.dumps(manifest), flush=True)

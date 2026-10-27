@@ -38,7 +38,8 @@ def main():
     assert set(labels) == set(range(500))
     processor = CLIPImageProcessor.from_pretrained(folder, local_files_only=True)
     model = CLIPVisionModelWithProjection.from_pretrained(folder, local_files_only=True, attn_implementation='eager').cuda().eval()
-    ds = TrainingImages([ROOT / 'data/official/train' / r[0] for r in rows], processor)
+    data_root = Path(json.loads((ROOT / 'data/a100/source_manifest.json').read_text())['splits']['train']['root'])
+    ds = TrainingImages([data_root / r[0] for r in rows], processor)
     loader = DataLoader(ds, batch_size=512, num_workers=8, pin_memory=True)
     arrays = []
     began = time.monotonic()

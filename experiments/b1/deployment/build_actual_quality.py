@@ -30,8 +30,9 @@ def main():
     rows = json.loads((ROOT / 'data/a100/train_index.json').read_text())
     manifest = dict(json.loads((ROOT / 'data/a100/train_sha256.json').read_text()))
     groups = []
+    data_root = Path(json.loads((ROOT / 'data/a100/source_manifest.json').read_text())['splits']['train']['root'])
     for i, (name, _) in enumerate(rows):
-        value = digest(ROOT / 'data/official/train' / name)
+        value = digest(data_root / name)
         assert value == manifest[name], name
         groups.append(value)
         if i % 10000 == 0:

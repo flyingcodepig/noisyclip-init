@@ -128,8 +128,8 @@ def main():
     teacher = torch.from_numpy(np.load(ROOT / 'cache/a100/train_teacher.npy')).cuda()
     labels = np.load(ROOT / 'cache/a100/train_labels.npy')
     dataset_class = StreamDataset if cfg.get('augmentation_mode') == 'worker_stream' else CachedImageDataset
-    dataset_extra = dict(stream_states=stream_states, workers=cfg['workers'], alternate_cache=ROOT / 'image_cache/semi_train_complete_512.npy' if cfg.get('alternate_complete_probability', 0) else None, alternate_probability=cfg.get('alternate_complete_probability', 0)) if dataset_class is StreamDataset else {}
-    training_cache = ROOT / ('image_cache/semi_train_complete_512.npy' if cfg.get('cache_kind') == 'complete' else 'image_cache/semi_train_512.npy')
+    dataset_extra = dict(stream_states=stream_states, workers=cfg['workers'], alternate_cache=Path(cfg['image_cache_dir']) / 'semi_train_complete_512.npy' if cfg.get('alternate_complete_probability', 0) else None, alternate_probability=cfg.get('alternate_complete_probability', 0)) if dataset_class is StreamDataset else {}
+    training_cache = Path(cfg['image_cache_dir']) / ('semi_train_complete_512.npy' if cfg.get('cache_kind') == 'complete' else 'semi_train_512.npy')
     ds = dataset_class(training_cache, np.arange(len(labels)), labels.tolist(), size=cfg['size'], train=True, scale=(cfg['rrc_min'], 1), wideshot_p=cfg['wideshot_p'], wideshot_scale=cfg['wideshot_scale'], wideshot_feather=cfg['feather'], jitter=cfg['jitter'], randaug_n=cfg.get('randaug_n', 0), randaug_m=cfg.get('randaug_m', 9), dual_view=True, seed_mode='worker' if dataset_class is StreamDataset else 'hash', base_seed=cfg['seed'] + rank * 10000019, **dataset_extra)
     sampler = DistributedSampler(ds, num_replicas=world, rank=rank, seed=cfg['seed'], drop_last=True)
     if len(sampler) < cfg['batch']:

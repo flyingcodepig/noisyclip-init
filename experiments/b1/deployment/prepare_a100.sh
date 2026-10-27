@@ -12,7 +12,4 @@ flock -n 9 || exit 2
 "$PYTHON" "$HERE/prepare_features.py"
 "$PYTHON" "$HERE/build_actual_quality.py"
 mkdir -p /root/b1-image-cache-20261027
-if [[ ! -e "$CODE/image_cache" ]]; then
-  ln -s /root/b1-image-cache-20261027 "$CODE/image_cache"
-fi
-"$PYTHON" "$CODE/build_cache_a100.py" --split train --workers 12
+"$PYTHON" "$CODE/build_cache_a100.py" --split train --cache-dir /root/b1-image-cache-20261027 --workers 12

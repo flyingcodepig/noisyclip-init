@@ -69,5 +69,6 @@
   "gradient_accumulation_steps": 8,
   "log_every": 5,
   "num_classes": 500,
-  "dataset_id": "matpool_semifinal_20261027"
+  "dataset_id": "matpool_semifinal_20261027",
+  "image_cache_dir": "/root/b1-image-cache-20261027"
 }

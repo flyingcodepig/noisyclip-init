@@ -20,20 +20,21 @@ def main():
     p = argparse.ArgumentParser()
     p.add_argument('--split', choices=('train','test'), required=True)
     p.add_argument('--workers', type=int, default=16)
+    p.add_argument('--cache-dir', type=Path, default=ROOT/'image_cache')
     a = p.parse_args()
-    official = ROOT/'data/official'/a.split
+    official = Path(json.loads((ROOT/'data/a100/source_manifest.json').read_text())['splits'][a.split]['root'])
     if a.split == 'train':
         index = json.loads((ROOT/'data/a100/train_index.json').read_text())
-        paths = [ROOT/'data/official/train'/r[0] for r in index]
+        paths = [official/r[0] for r in index]
     else:
         names = json.loads((ROOT/'data/a100/test_names.json').read_text())['names']
-        paths = [ROOT/'data/official/test'/name for name in names]
-    missing = [str(path.relative_to(ROOT)) for path in paths if not path.is_file()]
+        paths = [official/name for name in names]
+    missing = [str(path) for path in paths if not path.is_file()]
     if missing:
         raise FileNotFoundError(f'Missing {len(missing)} official images; examples: {missing[:3]}. Place official images under data/official')
     _init_worker(512)
     ImageFile.LOAD_TRUNCATED_IMAGES = True
-    out = ROOT/'image_cache'
+    out = a.cache_dir
     out.mkdir(exist_ok=True)
     for kind in ('center','complete'):
         target = out/f"semi_{a.split}{'_complete' if kind=='complete' else ''}_512.npy"
