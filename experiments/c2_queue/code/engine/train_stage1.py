@@ -268,7 +268,7 @@ def main():
             if ema is not None:
                 with torch.no_grad():
                     with sdpa_kernel(SDPBackend.MATH), torch.autocast('cuda', dtype=torch.bfloat16):
-                        ema_features, _ = ema(images)
+                        _, ema_features = ema(images)
                 ema_target = F.normalize(ema_features.float(), dim=-1)
                 if cfg['drift_kind'] == 'huber':
                     ema_drift = F.smooth_l1_loss(features, ema_target, beta=0.1, reduction='none').sum(-1).mean()
