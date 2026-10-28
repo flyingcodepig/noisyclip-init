@@ -1,0 +1,7 @@
+code/data/
+code/image_cache/
+code/weights/
+code/stage?.json
+code/engine/*.npy
+code/prepare_manifest.json
+code/requirements.actual.txt
