@@ -59,7 +59,9 @@ def main():
     print(f'val={len(labels)}  given==consensus: {clean_mask.sum()} ({clean_mask.mean():.3f})', flush=True)
 
     results = {}
-    for run in ('stage1', 'stage1_v2'):
+    run_names = sorted(p.name for p in (ROOT / 'runs').iterdir()
+                       if p.is_dir() and (p / 'validation_predictions.csv').exists())
+    for run in run_names:
         rows = list(csv.DictReader(open(ROOT / f'runs/{run}/validation_predictions.csv')))
         pred = np.asarray([int(r['prediction']) for r in rows], dtype=np.int64)
         given = np.asarray([int(r['given_label']) for r in rows], dtype=np.int64)
