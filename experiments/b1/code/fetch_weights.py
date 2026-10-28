@@ -1,11 +1,12 @@
+import argparse
 import hashlib
 from pathlib import Path
 import shutil
 from urllib.request import urlopen
 
 ROOT = Path(__file__).resolve().parent
-REVISION = '3d74acf9a28c67741b2f4f2ea7635f0aaf6f0268'
-EXPECTED = 'a63082132ba4f97a80bea76823f544493bffa8082296d62d71581a4feff1576f'
+DEFAULT_REVISION = '3d74acf9a28c67741b2f4f2ea7635f0aaf6f0268'
+DEFAULT_EXPECTED = 'a63082132ba4f97a80bea76823f544493bffa8082296d62d71581a4feff1576f'
 
 
 def digest(path):
@@ -17,17 +18,21 @@ def digest(path):
 
 
 def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--revision', default=DEFAULT_REVISION)
+    parser.add_argument('--expected', default=DEFAULT_EXPECTED)
+    args = parser.parse_args()
     target = ROOT/'weights/clip-vit-base-patch32/pytorch_model.bin'
     if target.exists():
-        assert digest(target) == EXPECTED, 'Official initialization checksum mismatch'
+        assert digest(target) == args.expected, 'Official initialization checksum mismatch'
         print('Official initialization verified')
         return
     temporary = target.with_suffix('.downloading')
-    url = f'https://huggingface.co/openai/clip-vit-base-patch32/resolve/{REVISION}/pytorch_model.bin'
+    url = f'https://huggingface.co/openai/clip-vit-base-patch32/resolve/{args.revision}/pytorch_model.bin'
     try:
         with urlopen(url, timeout=120) as response, temporary.open('wb') as stream:
             shutil.copyfileobj(response, stream, length=8*1024*1024)
-        assert digest(temporary) == EXPECTED, 'Downloaded initialization checksum mismatch'
+        assert digest(temporary) == args.expected, 'Downloaded initialization checksum mismatch'
         temporary.rename(target)
     except BaseException:
         temporary.unlink(missing_ok=True)

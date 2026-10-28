@@ -24,6 +24,7 @@ def main():
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--model', type=Path, required=True)
     parser.add_argument('--policy', type=Path, default=ROOT/'inference_policy.json')
+    parser.add_argument('--names', type=Path, default=ROOT/'data/test_names.json')
     args = parser.parse_args()
     os.environ.setdefault('CUDA_VISIBLE_DEVICES', '0')
     torch.set_num_threads(4)
@@ -31,15 +32,17 @@ def main():
     base, out = args.base.resolve(), args.output.resolve()
     policy = json.loads(args.policy.read_text())
     checkpoint = args.model.resolve()
+    names = json.loads(args.names.read_text())['names']
     with np.load(base/'test.npz') as data:
         views = torch.from_numpy(data['probabilities']).cuda()
         features = F.normalize(torch.from_numpy(data['features']).cuda(), dim=-1)
         native = F.normalize(torch.from_numpy(data['visual']).cuda(), dim=-1)
-    assert views.shape == (len(policy['view_weights']),37444,750) and native.shape == (37444,768)
+    assert views.shape[0] == len(policy['view_weights']) and views.shape[1] == len(names) and native.shape == (len(names), 768)
     assert all(torch.isfinite(x).all() for x in (views, features, native))
     state = torch.load(checkpoint, map_location='cpu', weights_only=False)
     centers = F.normalize(state['model']['head.weight'].cuda(), dim=-1)
     del state
+    assert views.shape[2] == centers.shape[0]
     pp = views.clamp_min(1e-9).pow(1/policy['temperature'])
     pp /= pp.sum(-1, keepdim=True)
     weights = torch.tensor(policy['view_weights'],device='cuda')[:,None,None]
@@ -73,7 +76,6 @@ def main():
     mutual = (index[index] == torch.arange(n,device='cuda')[:,None,None]).any(-1)
     weight = logweight.exp()*seed.max(-1).values[index].pow(policy['confidence_power'])*affinity*(edge+(1-edge)*mutual.float())
     q = propagate_with_floor(seed,index,weight,policy['alpha'],policy['iterations'],policy['minimum_propagation'])
-    names = json.loads((ROOT/'data/test_names.json').read_text())['names']
     assert len(names) == len(set(names)) == n
     z = sinkhorn(q, policy['assignment_temperature'], policy['balance_strength'], policy['assignment_iterations'])
     labels = z.argmax(-1).cpu().tolist()

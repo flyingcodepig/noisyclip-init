@@ -56,7 +56,6 @@ predict = (ROOT / 'predict.py').read_text(encoding='utf-8').replace('from infer 
 predict = predict.replace("cfg,192,'test'", "cfg,48,'test'")
 (ROOT / 'predict_a100.py').write_text(predict, encoding='utf-8')
 readout = (ROOT / 'readout.py').read_text(encoding='utf-8')
-readout = readout.replace('data/test_names.json', 'data/a100/test_names.json')
-readout = readout.replace("    assert views.shape == (len(policy['view_weights']),37444,750) and native.shape == (37444,768)", "    names = json.loads((ROOT/'data/a100/test_names.json').read_text())['names']\n    assert views.shape == (len(policy['view_weights']),len(names),500) and native.shape == (len(names),768)")
+readout = readout.replace("default=ROOT/'data/test_names.json'", "default=ROOT/'data/a100/test_names.json'")
 (ROOT / 'readout_a100.py').write_text(readout, encoding='utf-8')
 
