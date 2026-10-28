@@ -34,7 +34,9 @@ def main():
         loo=sums[y]-f;loo/=np.maximum(np.linalg.norm(loo,axis=1,keepdims=True),1e-8)
         scores[np.arange(len(f)),y]=(f*loo).sum(1);agreement[start:start+len(f)]=scores.argmax(-1)==y
     np.save(ROOT/'engine/frozen_loo_agreement.npy',agreement)
-    cfg=json.loads((C1/'stage1.json').read_text());cfg['contrast_queue']=json.loads((ROOT/'stage1.template.json').read_text())['contrast_queue']
+    cfg=json.loads((C1/'stage1.json').read_text());template=json.loads((ROOT/'stage1.template.json').read_text())
+    for key in ('contrast_queue','class_balanced_beta','ema_decay','ema_drift_weight'):
+        if key in template: cfg[key]=template[key]
     write(ROOT/'stage1.json',cfg)
     files={str(p.relative_to(ROOT)):sha(p) for folder in ['data','image_cache','cache','weights'] for p in (ROOT/folder).rglob('*') if p.is_file()}
     for p in list((ROOT/'engine').glob('*.npy'))+[ROOT/'stage1.json']:files[str(p.relative_to(ROOT))]=sha(p)

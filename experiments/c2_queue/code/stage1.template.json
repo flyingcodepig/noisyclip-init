@@ -66,6 +66,9 @@
   "num_classes": 500,
   "gradient_accumulation": 4,
   "lr_early_backbone": 1.55e-05,
+  "class_balanced_beta": 0.999,
+  "ema_decay": 0.999,
+  "ema_drift_weight": 0.02,
   "contrast_queue": {
     "capacity_per_class": 8,
     "max_age_updates": 256,

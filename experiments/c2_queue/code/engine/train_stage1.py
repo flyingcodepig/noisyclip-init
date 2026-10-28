@@ -105,8 +105,24 @@ def main():
         torch.set_rng_state(rng['torch'])
         torch.cuda.set_rng_state(rng['cuda'])
         stream_states = rng.get('stream_states', {})
+    ema = None
+    ema_decay = cfg.get('ema_decay', None)
+    if ema_decay is not None and ema_decay > 0:
+        ema = load_model(ws, cfg, ROOT, initialize_official=False)
+        ema.load_state_dict(model.state_dict())
+        for p in ema.parameters():
+            p.requires_grad_(False)
+        ema.cuda().eval()
     teacher = torch.from_numpy(np.load(HERE / 'train_teacher.npy')).cuda()
     labels = np.load(HERE / 'train_labels.npy')
+    num_classes = cfg.get('num_classes', 500)
+    class_weights = None
+    class_beta = cfg.get('class_balanced_beta', None)
+    if class_beta is not None and class_beta > 0:
+        counts = np.bincount(labels, minlength=num_classes).astype(np.float64)
+        class_weights = (1.0 - class_beta) / (1.0 - np.power(class_beta, counts))
+        class_weights = (class_weights / class_weights.mean()).astype(np.float32)
+        class_weights = torch.from_numpy(class_weights).cuda()
     own_features, own_probability = (None, None)
     if cfg.get('own_teacher'):
         from infer import sha
@@ -117,7 +133,7 @@ def main():
         with np.load(teacher_path) as data:
             own_features = torch.from_numpy(data['features']).cuda()
             own_probability = torch.from_numpy(data['probabilities']).cuda()
-        assert own_features.shape == teacher.shape and own_probability.shape == (len(labels), 750)
+        assert own_features.shape == teacher.shape and own_probability.shape == (len(labels), num_classes)
     sample_weights = None
     if cfg.get('loss_weights'):
         assert ws == ROOT
@@ -235,10 +251,12 @@ def main():
                 if candidate_labels is not None:
                     choices = candidate_labels[index]
                     log_probability = logits.log_softmax(-1).gather(1, choices.clamp_min(0)).masked_fill(choices < 0, -torch.inf).logsumexp(-1)
-                cls_loss = ((1 - (cfg['gce_q'] * log_probability).exp()) / cfg['gce_q']).mean()
                 floor = cfg.get('gce_ce_floor', 0.0)
                 assert 0 <= floor <= 1
-                cls_loss = (1 - floor) * cls_loss + floor * F.cross_entropy(logits, y)
+                per_sample = (1 - floor) * (1 - (cfg['gce_q'] * log_probability).exp()) / cfg['gce_q'] + floor * F.cross_entropy(logits, y, reduction='none')
+                if class_weights is not None:
+                    per_sample = per_sample * class_weights[y]
+                cls_loss = per_sample.mean()
                 target = teacher[index]
             if sample_weights is not None:
                 cls_loss = weighted_loss(logits, y, sample_weights[index], cfg['gce_q'], coefficient, perm if mixed else None, cfg.get('gce_ce_floor', 0.0))
@@ -246,6 +264,16 @@ def main():
                 drift = F.smooth_l1_loss(features, target, beta=0.1, reduction='none').sum(-1).mean()
             else:
                 drift = (features - target).square().sum(-1).mean()
+            ema_drift = features.new_zeros(())
+            if ema is not None:
+                with torch.no_grad():
+                    with sdpa_kernel(SDPBackend.MATH), torch.autocast('cuda', dtype=torch.bfloat16):
+                        ema_features, _ = ema(images)
+                ema_target = F.normalize(ema_features.float(), dim=-1)
+                if cfg['drift_kind'] == 'huber':
+                    ema_drift = F.smooth_l1_loss(features, ema_target, beta=0.1, reduction='none').sum(-1).mean()
+                else:
+                    ema_drift = (features - ema_target).square().sum(-1).mean()
             anchor = sum(((p.float() - anchors[n]).square().sum() for n, p in model.backbone.named_parameters() if n in anchors)) / max(1, len(anchors))
             contrast = features.new_zeros(())
             contrast_stats = {}
@@ -278,7 +306,7 @@ def main():
                     probability = coefficient * probability + (1 - coefficient) * permuted
                 own_kl = F.kl_div((logits / t).log_softmax(-1), probability, reduction='batchmean') * t * t
             geometry = model.projection_geometry_loss() if cfg.get('projection_geometry_weight', 0) else features.new_zeros(())
-            loss = cls_loss + cfg['drift'] * drift + cfg['l2sp'] * anchor + cfg['supcon'] * contrast + cfg.get('intrinsic_prior_weight', 0) * prior + cfg.get('projection_geometry_weight', 0) * geometry + cfg.get('own_drift_weight', 0) * own_drift + cfg.get('own_kl_weight', 0) * own_kl
+            loss = cls_loss + cfg['drift'] * drift + cfg['l2sp'] * anchor + cfg['supcon'] * contrast + cfg.get('intrinsic_prior_weight', 0) * prior + cfg.get('projection_geometry_weight', 0) * geometry + cfg.get('own_drift_weight', 0) * own_drift + cfg.get('own_kl_weight', 0) * own_kl + cfg.get('ema_drift_weight', 0) * ema_drift
             assert torch.isfinite(loss), f'Nonfinite training loss at step {step}'
             (loss / accumulation).backward()
             if not mixed:
@@ -289,11 +317,15 @@ def main():
             norm = torch.nn.utils.clip_grad_norm_((p for p in model.parameters() if p.requires_grad), 1.0)
             assert torch.isfinite(norm), f'Nonfinite gradient at step {step}'
             optimizer.step()
+            if ema is not None:
+                with torch.no_grad():
+                    for ep, sp in zip(ema.parameters(), model.parameters()):
+                        ep.mul_(ema_decay).add_(sp.data, alpha=1 - ema_decay)
             step += 1
             rolling.append([float(loss.detach()), float(cls_loss.detach()), float(drift.detach()), float(anchor.detach()), float(norm)])
             if rank == 0 and (step % 25 == 0 or step == args.until):
                 average = np.mean(rolling[-25:], axis=0).tolist()
-                state = dict(stage='training', step=step, target=args.until, epoch=epoch, mean_loss=average[0], classification=average[1], drift=average[2], anchor=average[3], gradient_norm=average[4], prior_loss=float(prior.detach()), cutmix_active=cutmixed, mixed=mixed, mixing_coefficient=coefficient, own_feature_drift=float(own_drift.detach()), own_posterior_kl=float(own_kl.detach()), geometry_loss=float(geometry.detach()), seconds=time.monotonic() - started, seconds_per_step=(time.monotonic() - started) / max(1, step - start), gpu=visible, gradient_accumulation=accumulation, effective_batch=cfg['batch']*world*accumulation, peak_allocated_gib=torch.cuda.max_memory_allocated()/1024**3)
+                state = dict(stage='training', step=step, target=args.until, epoch=epoch, mean_loss=average[0], classification=average[1], drift=average[2], anchor=average[3], gradient_norm=average[4], prior_loss=float(prior.detach()), cutmix_active=cutmixed, mixed=mixed, mixing_coefficient=coefficient, own_feature_drift=float(own_drift.detach()), own_posterior_kl=float(own_kl.detach()), geometry_loss=float(geometry.detach()), ema_drift=float(ema_drift.detach()), seconds=time.monotonic() - started, seconds_per_step=(time.monotonic() - started) / max(1, step - start), gpu=visible, gradient_accumulation=accumulation, effective_batch=cfg['batch']*world*accumulation, peak_allocated_gib=torch.cuda.max_memory_allocated()/1024**3)
                 state.update(queue.flush_metrics(step))
                 state['contrast_loss_last_microbatch'] = float(contrast.detach())
                 (out / 'status.json').write_text(json.dumps(state, indent=2))
