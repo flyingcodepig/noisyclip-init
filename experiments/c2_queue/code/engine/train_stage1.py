@@ -123,6 +123,12 @@ def main():
         class_weights = (1.0 - class_beta) / (1.0 - np.power(class_beta, counts))
         class_weights = (class_weights / class_weights.mean()).astype(np.float32)
         class_weights = torch.from_numpy(class_weights).cuda()
+    prototypes = None
+    proto_momentum = cfg.get('prototype_momentum', 0.9)
+    proto_temperature = cfg.get('prototype_temperature', 0.1)
+    if cfg.get('prototype_contrast_weight', 0) > 0:
+        prototypes = torch.from_numpy(np.load(HERE / 'initial_centers.npy')).cuda()
+        assert prototypes.shape == (num_classes, 512)
     own_features, own_probability = (None, None)
     if cfg.get('own_teacher'):
         from infer import sha
@@ -158,6 +164,14 @@ def main():
         candidate_labels = torch.from_numpy(np.load(candidate_path)).cuda()
         assert len(candidate_labels) == len(labels)
         assert (candidate_labels == torch.from_numpy(labels).cuda()[:, None]).any(-1).all()
+    soft_labels = None
+    if cfg.get('soft_labels'):
+        from infer import sha
+        soft_path = (ws / cfg['soft_labels']).resolve()
+        assert soft_path.is_relative_to(ws) and sha(soft_path) == cfg['soft_labels_sha256']
+        soft_labels = torch.from_numpy(np.load(soft_path)).cuda()
+        assert soft_labels.shape == (len(labels), num_classes) and torch.isfinite(soft_labels).all()
+        assert torch.allclose(soft_labels.sum(-1), torch.ones(len(labels), device='cuda'), atol=1e-4)
     accumulation = int(cfg.get('gradient_accumulation', 1))
     assert accumulation >= 1
     if cfg.get('data_backend') == 'zip':
@@ -306,7 +320,22 @@ def main():
                     probability = coefficient * probability + (1 - coefficient) * permuted
                 own_kl = F.kl_div((logits / t).log_softmax(-1), probability, reduction='batchmean') * t * t
             geometry = model.projection_geometry_loss() if cfg.get('projection_geometry_weight', 0) else features.new_zeros(())
-            loss = cls_loss + cfg['drift'] * drift + cfg['l2sp'] * anchor + cfg['supcon'] * contrast + cfg.get('intrinsic_prior_weight', 0) * prior + cfg.get('projection_geometry_weight', 0) * geometry + cfg.get('own_drift_weight', 0) * own_drift + cfg.get('own_kl_weight', 0) * own_kl + cfg.get('ema_drift_weight', 0) * ema_drift
+            soft_cls = features.new_zeros(())
+            if soft_labels is not None and not mixed:
+                soft_cls = -(soft_labels[index] * logits.log_softmax(-1)).sum(-1).mean()
+            proto_loss = features.new_zeros(())
+            if prototypes is not None and not mixed:
+                with torch.no_grad():
+                    onehot = F.one_hot(y, num_classes).float()
+                    sums = onehot.T @ features.float()
+                    counts = onehot.sum(0)
+                    valid = counts > 0
+                    if valid.any():
+                        fresh = F.normalize(sums[valid], dim=-1)
+                        prototypes[valid] = F.normalize(proto_momentum * prototypes[valid] + (1 - proto_momentum) * fresh, dim=-1)
+                proto_sim = features.float() @ prototypes.T / proto_temperature
+                proto_loss = F.cross_entropy(proto_sim, y)
+            loss = cls_loss + cfg['drift'] * drift + cfg['l2sp'] * anchor + cfg['supcon'] * contrast + cfg.get('intrinsic_prior_weight', 0) * prior + cfg.get('projection_geometry_weight', 0) * geometry + cfg.get('own_drift_weight', 0) * own_drift + cfg.get('own_kl_weight', 0) * own_kl + cfg.get('ema_drift_weight', 0) * ema_drift + cfg.get('soft_label_weight', 0) * soft_cls + cfg.get('prototype_contrast_weight', 0) * proto_loss
             assert torch.isfinite(loss), f'Nonfinite training loss at step {step}'
             (loss / accumulation).backward()
             if not mixed:
@@ -325,7 +354,7 @@ def main():
             rolling.append([float(loss.detach()), float(cls_loss.detach()), float(drift.detach()), float(anchor.detach()), float(norm)])
             if rank == 0 and (step % 25 == 0 or step == args.until):
                 average = np.mean(rolling[-25:], axis=0).tolist()
-                state = dict(stage='training', step=step, target=args.until, epoch=epoch, mean_loss=average[0], classification=average[1], drift=average[2], anchor=average[3], gradient_norm=average[4], prior_loss=float(prior.detach()), cutmix_active=cutmixed, mixed=mixed, mixing_coefficient=coefficient, own_feature_drift=float(own_drift.detach()), own_posterior_kl=float(own_kl.detach()), geometry_loss=float(geometry.detach()), ema_drift=float(ema_drift.detach()), seconds=time.monotonic() - started, seconds_per_step=(time.monotonic() - started) / max(1, step - start), gpu=visible, gradient_accumulation=accumulation, effective_batch=cfg['batch']*world*accumulation, peak_allocated_gib=torch.cuda.max_memory_allocated()/1024**3)
+                state = dict(stage='training', step=step, target=args.until, epoch=epoch, mean_loss=average[0], classification=average[1], drift=average[2], anchor=average[3], gradient_norm=average[4], prior_loss=float(prior.detach()), cutmix_active=cutmixed, mixed=mixed, mixing_coefficient=coefficient, own_feature_drift=float(own_drift.detach()), own_posterior_kl=float(own_kl.detach()), geometry_loss=float(geometry.detach()), ema_drift=float(ema_drift.detach()), soft_label_cls=float(soft_cls.detach()), prototype_loss=float(proto_loss.detach()), seconds=time.monotonic() - started, seconds_per_step=(time.monotonic() - started) / max(1, step - start), gpu=visible, gradient_accumulation=accumulation, effective_batch=cfg['batch']*world*accumulation, peak_allocated_gib=torch.cuda.max_memory_allocated()/1024**3)
                 state.update(queue.flush_metrics(step))
                 state['contrast_loss_last_microbatch'] = float(contrast.detach())
                 (out / 'status.json').write_text(json.dumps(state, indent=2))
