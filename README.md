@@ -53,3 +53,7 @@ python -m noisyclip.cli.train \
   --run-id b0-seed-20260806 \
   --resume /runs/b0-seed-20260806/checkpoints/last.pt
 ```
+
+## Robust CLIP workflow
+
+Current staged training, sample reliability weighting, spatial consistency, EMA export, and fixed multi-view inference are available in [robust_clip/](robust_clip/README.md).

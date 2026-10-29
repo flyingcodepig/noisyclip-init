@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+*.pt
+*.bin
+*.npy
+*.npz
+*.zip
+*.csv
+weights/
+image_cache/
+data/
+cache/
+runs/
+workspace/
