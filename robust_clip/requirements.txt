@@ -1,5 +1,0 @@
-torch>=2.5
-torchvision
-transformers==4.57.1
-numpy
-Pillow
