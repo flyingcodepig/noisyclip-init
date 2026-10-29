@@ -1,0 +1,41 @@
+{
+  "status": "passed",
+  "team": 41,
+  "actual_TRAIN_pixel_images": 2,
+  "original_vs_relocated_CPU_output_errors": {
+    "scene_logits": 0.0,
+    "object_descriptor": 0.0,
+    "scene_native": 0.0,
+    "ungated_scene_logits": 0.0,
+    "foreground_logits": 0.0,
+    "routing_reliability": 0.0,
+    "effective_foreground_gain": 0.0,
+    "original_foreground_gain": 0.0,
+    "routing_selected_class": 0.0,
+    "exchanged_logits": 0.0
+  },
+  "state_tensors": 205,
+  "loaded_tensor_values_and_strides_equal": true,
+  "original_checkpoint_and_result_zip_equal": true,
+  "immutable_TRAIN_and_TEST_input_files_equal": true,
+  "route_zero_primary_logits_equal_ungated": true,
+  "training_source_fingerprints_resolve": true,
+  "CPU_parent_contract_fixtures": [
+    {
+      "epoch": 10,
+      "complete_contract_accepted": true,
+      "incomplete_contract_rejected": true
+    },
+    {
+      "epoch": 12,
+      "complete_contract_accepted": true,
+      "incomplete_contract_rejected": true
+    }
+  ],
+  "parent_contract_fixture_is_training_run": false,
+  "inspection_from_external_working_directory_passed": true,
+  "full_frozen_readout_rows": 49857,
+  "prediction_sha256": "66f995864efd3dd492cd9e479c193a181ef6506d35848c90555d976dbc411086",
+  "GPU_initialized": false,
+  "new_training_run": false
+}

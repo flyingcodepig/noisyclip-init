@@ -1,0 +1,182 @@
+\documentclass[UTF8,fontset=none,zihao=-4]{ctexart}
+\usepackage[a4paper,margin=2.1cm]{geometry}
+\usepackage{fontspec,amsmath,amssymb,booktabs,tabularx,array,fancyhdr,hyperref,enumitem}
+\setmainfont{TeX Gyre Termes}
+\setmonofont{DejaVu Sans Mono}
+\setCJKmainfont{Noto Serif CJK SC}
+\setCJKsansfont{Noto Sans CJK SC}
+\setCJKmonofont{Noto Sans CJK SC}
+\hypersetup{hidelinks,pdftitle={前景校准与背景扰动一致性：半决赛技术方案},pdfauthor={依旧拥护滑稽的AIC小队},pdfcreator={LaTeX}}
+\setlength{\parskip}{0.35em}
+\linespread{1.15}
+\setlength{\emergencystretch}{3em}
+\setlist{nosep,leftmargin=2em}
+\pagestyle{fancy}\fancyhf{}
+\fancyhead[L]{\small AIC 2026 · 半决赛技术方案}
+\fancyhead[R]{\small AIC-2026-12985846}
+\fancyfoot[C]{\thepage}
+\setlength{\headheight}{16pt}
+\ctexset{section={format=\large\bfseries\sffamily},subsection={format=\normalsize\bfseries\sffamily}}
+\newcommand{\norm}[1]{\operatorname{norm}\!\left(#1\right)}
+\newcommand{\sm}{\operatorname{softmax}}
+\newcommand{\sg}{\operatorname{sg}}
+\newcommand{\code}[1]{\nolinkurl{#1}}
+\begin{document}
+\begin{center}
+{\LARGE\bfseries\sffamily 前景校准与背景扰动一致性}\par\medskip
+{\large 面向噪声标签细粒度图像识别的 CLIP 鲁棒微调}\par\bigskip
+\begin{tabular}{rl}
+参赛团队 & 依旧拥护滑稽的AIC小队\\
+参赛编号 & AIC-2026-12985846\\
+队长 & 张书凡\\
+比赛阶段 & 半决赛\\
+官方成绩 & \textbf{76.90671162491972}（DONE）\\
+提交时间 & 2026年10月28日 17:51:30\\
+评分时间 & 2026年10月28日 17:56:02
+\end{tabular}
+\end{center}
+\section*{一、算法概述}
+本方案使用本阶段官方 TRAIN 的90,197张图像及500个观察类别，在固定官方 CLIP ViT-B/32 初始化上训练一个视觉分类模型。TEST 的49,857张图像按固定配置推理，输出无表头的文件名与四位类别编号。
+
+模型从视觉 token 中构造前景和背景池化表征，将两者作为 CLS 的小幅残差。训练时交换不同样本的背景残差，并约束交换前后的类别决策；后续以停止梯度的主预测校准前景表征。推理采用同一检查点的八种输入，以及原生视觉描述上的固定近邻图传播。
+
+最终检查点实际训练14轮。前景增益保持由模型标量给出的固定值，动态区域门控强度为0。网络包含一个视觉编码器、一个类别方向矩阵和一个分类尺度；训练期前景辅助读取复用原分类器。
+
+\section*{二、实现方案}
+\subsection*{前景与背景表征}
+视觉编码器为12层、宽度768、patch大小32的 CLIP ViT-B/32，官方视觉投影从768维映射至512维，并在全部阶段固定。令末层 CLS 为 $c$，patch 为 $p_i$，相关度为
+\[
+r_i=\norm{c}^{\mathsf T}\norm{p_i}.
+\]
+取最高22\%相关度 patch 构成集合 $I_F$，最低35\%构成 $I_B$，数量向上取整。前景为集合内温度加权池化，背景为集合内平均：
+\[
+f=\sum_{i\in I_F}\frac{\exp(r_i/T_f)}{\sum_{j\in I_F}\exp(r_j/T_f)}p_i,
+\qquad b=\frac1{|I_B|}\sum_{i\in I_B}p_i.
+\]
+其中 $T_f=\operatorname{clip}(\exp(t_f),0.025,0.35)$。对 $f,b$ 分别施加无可学习参数的 LayerNorm，得到 $\bar f,\bar b$。
+
+\subsection*{分类与训练目标}
+分类表征和类别分数为
+\[
+h=c+a\bar f-d\bar b,\quad
+a=0.12\sigma(u),\quad d=0.02+0.06\sigma(v),
+\]
+\[
+z=\norm{P\operatorname{postLN}(h)},\qquad
+s_k=\tau z^{\mathsf T}\norm{w_k},\quad \tau=\operatorname{clip}(\exp(t),1,100).
+\]
+类别方向 $w_k$ 的初值来自固定官方初始化在 TRAIN 上的224输入特征：每类均值减去0.08倍全体 TRAIN 均值，再归一化。使用官方观察标签聚合，类别数为500。
+
+背景扰动采用批内非零循环位移 $\pi$，保留本样本的 CLS 和前景，只交换最终背景残差：
+\[
+h'_i=c_i+a\bar f_i-d\bar b_{\pi(i)}.
+\]
+由同一分类器得到 $s'_i$。前8轮使用交叉熵；随后采用 $q=0.7$ 的广义交叉熵 $\ell_q=(1-p_y^q)/q$。基础目标为
+\[
+\mathcal L_{\rm scene}=\ell(s,y)+0.25\ell(s',y)
++0.2\operatorname{JS}(\sm(s),\sm(s'))+0.01\mathcal R_{\rm SP}.
+\]
+其中 $\mathcal R_{\rm SP}$ 为视觉参数相对官方初始化的平方差之和，按参与参数张量数量平均，投影除外。
+
+第11—14轮增加前景校准。将前景经原 post-LN 和投影后得到 $z_F$，以停止梯度的类别方向和尺度得到前景分数 $s_F$。令 $T=2$，主预测置信度 $m=\max\sm(s)$：
+\[
+\mathcal L_F=\frac1B\sum_i T^2\sg(m_i)
+\operatorname{KL}\!\left[\sg\!\left(\sm(s_i/T)\right)\,\|\,\sm(s_{F,i}/T)\right],
+\quad \mathcal L=\mathcal L_{\rm scene}+0.05\mathcal L_F.
+\]
+该辅助项向视觉表征与post-LN传递梯度；教师分布及该分支的分类器权重停止梯度。
+
+\subsection*{完整训练预算}
+每轮90,197张，batch=88，每轮1,025步，尾批85张。共14轮、1,262,758图次、14,350次更新。
+\begin{center}\small
+\begin{tabularx}{\textwidth}{@{}p{1.7cm}p{2.7cm}X@{}}\toprule
+阶段 & 更新范围 & 目标与视觉/分类器/场景参数学习率\\\midrule
+第1—8轮 & 全视觉（投影除外） & 混合交叉熵；$1.9\!\times\!10^{-5}/9\!\times\!10^{-4}/1.5\!\times\!10^{-4}$\\
+第9—10轮 & 最后4块及post-LN & GCE；$4\!\times\!10^{-6}/8\!\times\!10^{-5}/3\!\times\!10^{-5}$\\
+第11—12轮 & 同上 & GCE加前景校准；$10^{-6}/2\!\times\!10^{-5}/10^{-5}$\\
+第13—14轮 & 同上 & 相同目标续训，门控强度0；学习率同上\\\bottomrule
+\end{tabularx}
+\end{center}
+
+\subsection*{增强与优化设置}
+训练先将原图转RGB，按短边BICUBIC缩放至512后取整数中心512画布。CE阶段使用完整画布的概率为0.4，GCE阶段为0.7，其余从画布随机裁剪边长384—512的正方形。随后以tensor bicubic、抗锯齿和$[0,1]$截断缩放至640。水平翻转概率0.5，颜色扰动参数为亮度0.16、对比度0.16、饱和度0.11、色调0.03。
+
+前8轮每四批中前三批执行混合，MixUp$(\alpha=0.2)$与CutMix$(\alpha=1)$等概率，第四批使用原观察标签。后6轮不混合图像与标签。采用AdamW，weight decay为0.045，场景标量不衰减，梯度范数裁剪为1。阶段内4\%步数预热后余弦衰减，随机种子12985846。第9轮和两个追加阶段重置对应阶段的优化器与学习率调度；两个追加阶段按声明重置随机数。
+
+\subsection*{固定八输入推理}
+测试原图采用与训练缓存相同的RGB512画布。构造以下输入：
+\begin{enumerate}
+\item 完整画布缩放640，以及其水平镜像；
+\item 画布中心384裁剪，缩放640；
+\item 左上、右上、左下、右下四个384裁剪，各缩放640；
+\item 完整512画布缩放736，尺度按 $\operatorname{round}((640\times512/448)/32)\times32$ 计算。
+\end{enumerate}
+所有输入采用CLIP均值与标准差标准化，以BF16与SDPA执行同一模型。640对应20×20个patch，736对应23×23个patch，位置编码按网格插值。
+
+令前两种输入分数为 $s_1,s_2$，先计算 $p_{12}=\sm((s_1+s_2)/(2\times2.8))$。四角概率与完整736概率分别按温度2.8计算。将这些分布记为 $p_j$，前两种合并项重数为2，其余为1，按 $\omega_j=n_j\max_k p_{jk}$ 加权：
+\[
+p=0.875\frac{\sum_j\omega_jp_j}{\sum_j\omega_j}
++0.125\sm(s_{\rm center}/2.8),\qquad l=2.8\log\max(p,10^{-30}).
+\]
+后续图读出使用 $l$。描述几何来自完整736输入的原生768维输出，以及前两种640输入原生输出之和；两者分别归一化后存为FP16，读出时还原FP32、再次归一化并拼接除以 $\sqrt2$。
+
+\subsection*{固定 CPU 图读出}
+对全部49,857张TEST构建24近邻图，自身从近邻中排除。所有类别概率和视觉描述均来自同一固定检查点。图运算在CPU执行，不更新网络参数。
+
+首先计算 $\log\sm(l/2.8)$，将其全局中心化并除以标准差与0.345的乘积。对得到的能量矩阵进行100次对数域行列归一化，列目标为 $N/500$、行和为1，得到初始分布 $S$。列均衡是数值正则化设置。
+
+令余弦相似度为 $v_{ij}$，距离 $D_{ij}=\max(1-v_{ij},10^{-5})$，局部半径 $\rho_i$ 为第5近邻距离的平方根。近邻权重由以下量共同确定：
+\[
+L^{\rm cos}_{ij}=52(v_{ij}-v_{i1}),\qquad
+L^{\rm loc}_{ij}=-\frac{D_{ij}}{\max(\rho_i\rho_j,10^{-8})}.
+\]
+局部项按每行最大值平移。以 $\exp(0.8L^{\rm cos}+0.2L^{\rm loc})$ 为起点，再乘以邻居置信度 $(\max S_j)^{1.75}$、概率兼容度 $\bigl(\sum_k\sqrt{S_{ik}S_{jk}}\bigr)^{2.6}$ 及互近邻系数：互近邻为1，否则为0.81。权重行归一化为稀疏矩阵 $W$，孤立行使用自环。
+
+逐行传播系数为
+\[
+\alpha_i=0.979\left[0.58+0.42(1-\max_k S_{ik})\right].
+\]
+从 $P^{(0)}=S$ 开始，计算8次
+\[
+P^{(t+1)}=(1-\alpha)S+\alpha WP^{(t)}.
+\]
+最终类别为 $\arg\max_k P^{(8)}_{ik}$。实现中另计算温度0.96、124次迭代的分配矩阵，该返回值不参与最终标签。
+
+
+\subsection*{计算模块与运行入口}
+代码按照计算职责组织。\code{scene/}定义token选择、前景背景池化、分类及前景校准；\code{training/}依次执行10轮主训练、2轮校准和2轮route=0续训；\code{query/}包含原图读取、八输入采集、分片归位与CPU传播。环境和推理设置分别在\code{settings/environment.json}及\code{settings/inference.json}。
+
+根入口为\code{bash scene.sh}：\code{inspect}检查固定模型和结果，\code{infer}执行查询，\code{cache}重建TRAIN像素，\code{init}获取固定初始化，\code{learn}执行完整训练或指定阶段。\code{ops/}负责路径、缓存、GPU独占和父模型校验。输入清单及未训练官方特征放在\code{inputs/}，官方结果身份与验证程序在\code{checks/}；新缓存和结果默认进入\code{var/}。
+
+查询使用\code{infer}，通过\code{--test-dir}指定TEST目录、\code{--output}指定新结果目录，从完整PT和结构配置创建模型。四份采集按排序TEST列表的\code{part::4}划分，合并核对每图恰好出现一次。固定bank支持在CPU重新计算传播。\code{inspect}的\code{--prediction}参数用于比较重放CSV与官方提交文件。
+
+新训练先运行\code{init}及\code{cache}，再执行\code{learn}。后续阶段核对本次父模型的完成标记、累计轮数、步数、哈希、原始投影与源码绑定。入口支持阶段边界续接；各阶段内部优化器状态另行保存。\code{learn --dry-run}打印预算，具体命令和数据放置在\code{guide/}。
+
+记录环境为Python 3.12、PyTorch 2.13.0+cu130、Torchvision 0.28.0+cu130、Transformers 5.15.0、NumPy 2.5.2、Pillow 12.3.0。固定模型原图预测使用RTX 4090、batch 32、BF16、SDPA。TRAIN像素缓存约66.1 GiB，训练与缓存建议至少90 GiB磁盘空间；原训练batch 88的峰值分配约13.3 GiB。
+
+\section*{三、算法创新点}
+本方案围绕同一视觉编码器中的前景与背景贡献建立训练目标。相关度池化形成可参与分类的区域残差；背景交换在保持当前CLS与前景的条件下改变背景项，联合监督与JS约束交换前后输出。随后，主预测作为停止梯度的教师，在同一类别几何中校准前景表征，辅助项通过视觉与post-LN更新区域表示。
+
+获分版本保持由模型标量确定的前景增益，动态区域贡献强度为0。CLIP视觉骨干、GCE、JS与KL采用相应已有定义，数值图传播沿用公共实现。具体区域计算及训练期接入分别由\code{scene/}与\code{training/}给出。
+
+\section*{四、问题与思考}
+前景和背景来自CLS与patch的相关度选择，描述模型内部的区域表征，没有像素级分割标注。背景交换发生于最终表征残差，保持本样本的CLS及前景；主分类器和前景读取共用类别方向。
+
+训练使用全量TRAIN的观察标签，所选模型没有独立留出验证集。固定查询读出使用完整TEST集合，等列质量作为软概率正则；邻居与传播会随查询集合改变。重新训练按独立优化运行记录，并使用相同输入和读出协议核对生成结果。
+
+\section*{五、过程进度}
+已完成14轮训练、全部49,857张TEST的固定八输入预测及官方提交。官方成绩为76.90671162491972，DONE，提交于2026年10月28日17:51:30，出分17:56:02。正式完整模型保存205个状态张量，官方结果ZIP内唯一文件为\code{pred_results.csv}，每行是官方文件名与四位类别，无表头。
+
+交付材料包括技术方案PDF、完整模型PT、代码与数据目录、结果ZIP四项。代码提供原图清单核验、固定初始化下载、RGB512缓存重建、10+2+2轮训练与父模型检查、分片推理、CPU读出及结果验证。固定模型预测已与官方提交CSV逐字节核对，结果身份及SHA256在\code{checks/official_result.json}。
+
+\section*{六、团队分工}
+报名成员为张书凡（队长）、洪聚一、熊思亮。工作模块围绕场景计算、训练与复现交接：场景模块负责相关度分区、前景背景残差和共享分类几何；训练模块负责背景交换、前景校准与14轮日程；复现模块负责图像清单、八输入、结果格式及技术说明。对应代码在\code{scene/}、\code{training/}、\code{ops/}及\code{query/}，操作和模型说明在\code{guide/}。
+
+\section*{七、解题参考资源}
+\begin{enumerate}
+\item Radford等，Learning Transferable Visual Models From Natural Language Supervision，2021，\url{https://arxiv.org/abs/2103.00020}。
+\item Zhang和Sabuncu，Generalized Cross Entropy Loss for Training Deep Neural Networks with Noisy Labels，2018，\url{https://arxiv.org/abs/1805.07836}。
+\item 官方CLIP-B/32初始化的下载程序为\code{ops/fetch_weights.py}，其中记录固定revision和权重SHA256。Transformers提供视觉编码器、SDPA和位置插值实现。
+\item PyTorch、Torchvision、NumPy、Pillow及公共图读出来源见\code{THIRD_PARTY.md}；固定输入、传播参数和依赖环境在\code{settings/}。
+\end{enumerate}
+\end{document}

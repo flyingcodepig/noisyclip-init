@@ -1,0 +1,187 @@
+{
+  "source": "10.29",
+  "date": "2026-10-29",
+  "files": [
+    {
+      "path": "AIC-2026-12985846-模型文件.pt",
+      "bytes": 352491173,
+      "sha256": "95a286d031e4d95085d7ba7bf78f17a7a55c3a51e0f7688474ca74c311031586"
+    },
+    {
+      "path": "代码与数据/checks/__init__.py",
+      "bytes": 38,
+      "sha256": "4ae13df1b86e2ca4713915ae0d986c37d22b7106c73be05c04c63747218e47da"
+    },
+    {
+      "path": "代码与数据/checks/layout_receipt.json",
+      "bytes": 1289,
+      "sha256": "0f0e92db2bf4d1a5d4f156f2a0866163bbc4ec76f63afb2b9b5d3106f7553d74"
+    },
+    {
+      "path": "代码与数据/checks/official_result.json",
+      "bytes": 1105,
+      "sha256": "8874bee385749b5bb45a059604a3b273ba42e937a0a944bec4e24af6c727d548"
+    },
+    {
+      "path": "代码与数据/checks/package.sha256",
+      "bytes": 5315,
+      "sha256": "87f713e5de39faf1b904cb5df47a542f389493e37b3df4ed337dfab64014f3c0"
+    },
+    {
+      "path": "代码与数据/checks/release.py",
+      "bytes": 2806,
+      "sha256": "f35816e9a46b27a4591f25c0288228d981f35723c136a8ccdf0bcb488a6cc06e"
+    },
+    {
+      "path": "代码与数据/guide/data.md",
+      "bytes": 801,
+      "sha256": "be73d491952212cca520a6e98fb49f9aedd2956eb8522f88ddcfe79b90e523dc"
+    },
+    {
+      "path": "代码与数据/guide/model_and_losses.md",
+      "bytes": 1553,
+      "sha256": "503117fbb61cf66c4aa623a2e6a1b905abd0b1de8c777e59b0e51b6382b42402"
+    },
+    {
+      "path": "代码与数据/guide/reproduce.md",
+      "bytes": 3032,
+      "sha256": "a4235824c027c5000eec56f91b6ad40d13a110f1973a90fed4b3f572e51d326d"
+    },
+    {
+      "path": "代码与数据/guide/technical_plan.tex",
+      "bytes": 14039,
+      "sha256": "4a03763509816028ce5c19684ae11869a111d9d19a2598b014723517af52de59"
+    },
+    {
+      "path": "代码与数据/ops/__init__.py",
+      "bytes": 38,
+      "sha256": "4ae13df1b86e2ca4713915ae0d986c37d22b7106c73be05c04c63747218e47da"
+    },
+    {
+      "path": "代码与数据/ops/cache_train.py",
+      "bytes": 4582,
+      "sha256": "9f2b9a4a79ef902c46a5e2c43052040732656fec085b9a3d4ede6d507b3eb990"
+    },
+    {
+      "path": "代码与数据/ops/fetch_weights.py",
+      "bytes": 5525,
+      "sha256": "f05dde594822ebd6271511d9739842231aac395a53de3f6a03b2c68e9fa98d31"
+    },
+    {
+      "path": "代码与数据/ops/runtime.py",
+      "bytes": 7559,
+      "sha256": "60b0c69d47785fa19a99c5790f3e81ca227d49814e107b70d07e3e01671a8f8d"
+    },
+    {
+      "path": "代码与数据/ops/train_chain.py",
+      "bytes": 2148,
+      "sha256": "a548b467361403bbdf153627973531b7c9469c275d4898a971b14207800b289a"
+    },
+    {
+      "path": "代码与数据/query/__init__.py",
+      "bytes": 38,
+      "sha256": "4ae13df1b86e2ca4713915ae0d986c37d22b7106c73be05c04c63747218e47da"
+    },
+    {
+      "path": "代码与数据/query/eight_inputs.py",
+      "bytes": 12510,
+      "sha256": "f09a6b29ba93630de400af5463c8546433746a03cd5aef85c6ca3f83bdca8009"
+    },
+    {
+      "path": "代码与数据/query/pixels.py",
+      "bytes": 1591,
+      "sha256": "24b696ac9fd5d4f3fb736c2094a7919581525dc530e5c5bbff49526038559d65"
+    },
+    {
+      "path": "代码与数据/query/predict.py",
+      "bytes": 6401,
+      "sha256": "710fa306ba56094174f330c36a1ce050571e835c64b7037ef5c80e49585832d0"
+    },
+    {
+      "path": "代码与数据/query/propagation.py",
+      "bytes": 6258,
+      "sha256": "f061c09cadf5e697279989c89f983798db12733297c58e0902922ec7d8634aab"
+    },
+    {
+      "path": "代码与数据/scene/__init__.py",
+      "bytes": 195,
+      "sha256": "e55ffb8f3b1594c59565aeb9e081a221629d7370f002cde1bb918b459b300c59"
+    },
+    {
+      "path": "代码与数据/scene/evidence_routed_scene.py",
+      "bytes": 4856,
+      "sha256": "4accbc5dad8ba6f54d37e97b003314eccd0496f02e161b80bc5fd5e447cdba05"
+    },
+    {
+      "path": "代码与数据/scene/foreground_alignment.py",
+      "bytes": 3280,
+      "sha256": "d7beaa7289e90a417c84f1f37a1cb05a201dbad89ba992b225d16ac890bfd1d6"
+    },
+    {
+      "path": "代码与数据/scene/foreground_encoder.py",
+      "bytes": 2511,
+      "sha256": "47eb8f95cfab10e01568a7bead503585a91a2aadddf507872646156e8b66ab6d"
+    },
+    {
+      "path": "代码与数据/scene/token_partition.py",
+      "bytes": 1124,
+      "sha256": "50e0a6663715df3b479614d8420ad2887e9e24977fb328d63dfab4a6f044e3f8"
+    },
+    {
+      "path": "代码与数据/scene.sh",
+      "bytes": 917,
+      "sha256": "245cd04ba5564bb4a5f6150df68b2ca1dac2d7f261a5839f381b33a39d493c65"
+    },
+    {
+      "path": "代码与数据/settings/clip/config.json",
+      "bytes": 4186,
+      "sha256": "b575ef3c36f2a057fa19e221650105052d61cc9c1a972ec15019c6261ec98770"
+    },
+    {
+      "path": "代码与数据/settings/clip/preprocessor_config.json",
+      "bytes": 316,
+      "sha256": "910e70b3956ac9879ebc90b22fb3bc8a75b6a0677814500101a4c072bd7857bd"
+    },
+    {
+      "path": "代码与数据/settings/clip/README.md",
+      "bytes": 149,
+      "sha256": "2cceb8045d80b59059ccbbe7ce280ab665c8500717f3365c0f78209123202505"
+    },
+    {
+      "path": "代码与数据/settings/environment.json",
+      "bytes": 212,
+      "sha256": "7dcbd28e4e6466ba755cb48133c165387fd40588a8f2aa732fea5b7bae0855b9"
+    },
+    {
+      "path": "代码与数据/settings/inference.json",
+      "bytes": 789,
+      "sha256": "ea3582b172da9ad3ddb32df7cd699125a6e539f223ff9e907a27282f85d8f4ec"
+    },
+    {
+      "path": "代码与数据/training/__init__.py",
+      "bytes": 38,
+      "sha256": "4ae13df1b86e2ca4713915ae0d986c37d22b7106c73be05c04c63747218e47da"
+    },
+    {
+      "path": "代码与数据/training/calibrate.py",
+      "bytes": 21046,
+      "sha256": "abe5ac450c7d0cad2fef7fb2885eef598928c42f173862ce683a760828f515c4"
+    },
+    {
+      "path": "代码与数据/training/continue_scene.py",
+      "bytes": 22137,
+      "sha256": "4b00d2bad3551bda1224de61b6678e207a73344d44dd8546c3f069bcc0886ba8"
+    },
+    {
+      "path": "代码与数据/training/schedule.py",
+      "bytes": 25086,
+      "sha256": "0642d5d36fa84c4c983f04b090bc3fb3ab8429e94553abddebd22211cf512462"
+    },
+    {
+      "path": "代码与数据/var/README.md",
+      "bytes": 182,
+      "sha256": "18048afca8206d71e9c782888c948dc43daa9a4218dfb7ddf6a73219d6678edf"
+    }
+  ],
+  "excluded": "inputs/ data files require separate authorization"
+}

@@ -1,0 +1,1 @@
+重建TRAIN像素缓存写入var/cache/train，新训练与查询写入var/runs或显式参数指定的位置。正式模型、inputs和checks中的固定文件作为只读输入。

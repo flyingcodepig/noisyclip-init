@@ -55,3 +55,7 @@ temp/
 .idea/
 .DS_Store
 Thumbs.db
+
+# Explicit release checkpoint, stored through Git LFS.
+!/10.29/*.pt
+/10.29/代码与数据/inputs/
