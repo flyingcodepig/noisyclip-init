@@ -6,9 +6,9 @@ __pycache__/
 *.npz
 *.zip
 *.csv
-weights/
-image_cache/
-data/
-cache/
-runs/
-workspace/
+/weights/
+/image_cache/
+/data/
+/cache/
+/runs/
+/workspace/
