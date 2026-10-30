@@ -1,0 +1,6 @@
+data/
+prepared/
+runs/
+output/
+weights/clip-vit-base-patch32/pytorch_model.bin
+*.log
