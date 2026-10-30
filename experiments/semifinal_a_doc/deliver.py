@@ -64,6 +64,7 @@ def main():
     p.add_argument("--output", required=True)
     p.add_argument("--batch", type=int, default=64)
     p.add_argument("--workers", type=int, default=8)
+    p.add_argument("--graph-mode", choices=("e1", "joint"), default="e1")
     args = p.parse_args()
     if not torch.cuda.is_available(): raise RuntimeError("CUDA GPU required")
     state = torch.load(args.checkpoint, map_location="cpu", weights_only=False)
@@ -72,7 +73,7 @@ def main():
     model = AModel(args.official_weights, cfg["classes"], cfg["image_size"])
     model.load_state_dict(state["model"], strict=True)
     model.cuda().eval().requires_grad_(False)
-    rows = inventory(args.test_root, train=False)
+    rows = inventory(args.test_root, train=False, expected=cfg.get("expected_test", 49857))
     loader = DataLoader(Query(rows, cfg["views"]), batch_size=args.batch, num_workers=args.workers, pin_memory=True)
     probs, features, visuals = [], [], []
     weights = torch.tensor([v[3] for v in cfg["views"]], device="cuda")
@@ -97,7 +98,11 @@ def main():
     prior = (cfg["head_prior_scale"] * feature @ head.T).softmax(-1)
     mixed = (1 - cfg["head_prior_weight"]) * prob + cfg["head_prior_weight"] * prior
     seed = sinkhorn(mixed, 0.39, 1, 60)
-    edges = [graph(x, seed, cfg["neighbors"]) for x in (feature, visual)]
+    if args.graph_mode == "e1":
+        edges = [graph(x, seed, cfg["neighbors"]) for x in (feature, visual)]
+    else:
+        combined = F.normalize(torch.cat((feature, visual), dim=-1), dim=-1)
+        edges = [graph(combined, seed, cfg["neighbors"])]
     alpha = cfg["graph_alpha"] * (0.63 + 0.37 * (1 - seed.max(-1).values))[:, None]
     current = seed
     for iteration in range(1, cfg["graph_iterations"] + 1):
@@ -105,7 +110,7 @@ def main():
         for index, weight in edges:
             for start in range(0, len(seed), 256):
                 part = slice(start, start + 256)
-                aggregate[part] += 0.5 * (current[index[part]] * weight[part, :, None]).sum(1)
+                aggregate[part] += (current[index[part]] * weight[part, :, None]).sum(1) / len(edges)
         current = (1 - alpha) * seed + alpha * aggregate
         current /= current.sum(-1, keepdim=True).clamp_min(1e-12)
         if iteration in (2, 4, 6): current = sinkhorn(current, 0.90, 0.60, 30)

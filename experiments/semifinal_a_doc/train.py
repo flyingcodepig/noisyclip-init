@@ -62,7 +62,7 @@ def main():
     run.mkdir(parents=True, exist_ok=True)
     rows = json.loads((prepared / "train_inventory.json").read_text(encoding="utf-8"))
     data = np.load(prepared / "train_inputs.npz")
-    if len(rows) != 90197 or len(data["labels"]) != len(rows): raise ValueError("Invalid train inventory")
+    if len(rows) != cfg.get("expected_train", 90197) or len(data["labels"]) != len(rows): raise ValueError("Invalid train inventory")
     if not torch.cuda.is_available(): raise RuntimeError("CUDA A100 required")
     random.seed(cfg["seed"]); np.random.seed(cfg["seed"]); torch.manual_seed(cfg["seed"]); torch.cuda.manual_seed_all(cfg["seed"])
     torch.set_num_threads(4)

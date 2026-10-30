@@ -26,9 +26,11 @@ def main():
     p.add_argument("--output", required=True)
     p.add_argument("--batch", type=int, default=256)
     p.add_argument("--workers", type=int, default=8)
+    p.add_argument("--classes", type=int, default=500)
+    p.add_argument("--expected-train", type=int, default=90197)
     args = p.parse_args()
     out = Path(args.output); out.mkdir(parents=True, exist_ok=True)
-    rows = inventory(args.train_root)
+    rows = inventory(args.train_root, classes=args.classes, expected=args.expected_train)
     save_inventory(rows, out / "train_inventory.json")
     model = CLIPVisionModelWithProjection.from_pretrained(args.official_weights, local_files_only=True).cuda().eval()
     features = [[], []]
@@ -48,9 +50,9 @@ def main():
     for i, (path, _) in enumerate(rows):
         digest = hashlib.sha256(Path(path).read_bytes()).digest()
         canonical[i] = canonical_map.setdefault(digest, len(canonical_map))
-    sums = np.zeros((500, 512), np.float32)
+    sums = np.zeros((args.classes, 512), np.float32)
     np.add.at(sums, labels, teacher)
-    counts = np.bincount(labels, minlength=500)
+    counts = np.bincount(labels, minlength=args.classes)
     centers = sums / np.linalg.norm(sums, axis=1, keepdims=True).clip(1e-8)
     # Original-label leave-one-out decision and two-view high-margin candidate rule.
     own = sums[labels] - teacher

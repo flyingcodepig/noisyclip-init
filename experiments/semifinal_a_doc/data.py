@@ -14,16 +14,16 @@ MEAN = (0.48145466, 0.4578275, 0.40821073)
 STD = (0.26862954, 0.26130258, 0.27577711)
 
 
-def inventory(root, train=True):
+def inventory(root, train=True, classes=500, expected=None):
     root = Path(root)
     if train:
-        classes = sorted(p for p in root.iterdir() if p.is_dir())
-        if [p.name for p in classes] != [f"{i:04d}" for i in range(500)]:
-            raise ValueError("Expected class folders 0000 through 0499")
-        rows = [(str(p), int(folder.name)) for folder in classes for p in sorted(folder.glob("*.jpg"))]
+        folders = sorted(p for p in root.iterdir() if p.is_dir())
+        if [p.name for p in folders] != [f"{i:04d}" for i in range(classes)]:
+            raise ValueError("Unexpected class folders")
+        rows = [(str(p), int(folder.name)) for folder in folders for p in sorted(folder.glob("*.jpg"))]
     else:
         rows = [(str(p), -1) for p in sorted(root.glob("*.jpg"))]
-    expected = 90197 if train else 49857
+    expected = expected or (90197 if train else 49857)
     if len(rows) != expected:
         raise ValueError(f"Expected {expected} images, found {len(rows)}")
     return rows
