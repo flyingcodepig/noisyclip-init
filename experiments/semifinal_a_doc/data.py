@@ -31,7 +31,14 @@ def inventory(root, train=True, classes=500, expected=None):
 
 def open_rgb(path):
     with Image.open(path) as source:
-        return ImageOps.exif_transpose(source).convert("RGB")
+        try:
+            return ImageOps.exif_transpose(source).convert("RGB")
+        except SyntaxError as error:
+            # Some JPEGs contain a malformed EXIF TIFF header while their pixels
+            # decode correctly. Ignore only that metadata parsing failure.
+            if "not a TIFF file" not in str(error):
+                raise
+            return source.convert("RGB")
 
 
 def centered(image, ratio=6 / 7):
