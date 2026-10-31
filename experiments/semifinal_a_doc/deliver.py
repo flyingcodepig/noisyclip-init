@@ -65,7 +65,11 @@ def main():
     p.add_argument("--batch", type=int, default=64)
     p.add_argument("--workers", type=int, default=8)
     p.add_argument("--graph-mode", choices=("e1", "joint"), default="e1")
+    p.add_argument("--save-cache", help="Save label-free four-view outputs for readout sweeps")
+    p.add_argument("--cache-only", action="store_true")
     args = p.parse_args()
+    if args.cache_only and not args.save_cache:
+        raise ValueError("--cache-only requires --save-cache")
     if not torch.cuda.is_available(): raise RuntimeError("CUDA GPU required")
     state = torch.load(args.checkpoint, map_location="cpu", weights_only=False)
     cfg = state["config"]
@@ -90,6 +94,17 @@ def main():
             visual = F.normalize(torch.stack(view_visuals).mean(0), dim=-1)
             probs.append(prob.cpu()); features.append(feature.cpu()); visuals.append(visual.cpu())
             if number % 50 == 0: print(f"inference {number * args.batch}/{len(rows)}", flush=True)
+    if args.save_cache:
+        cache_path = Path(args.save_cache)
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        torch.save({"names": [Path(path).name for path, _ in rows],
+                    "prob": torch.cat(probs), "feature": torch.cat(features),
+                    "visual": torch.cat(visuals),
+                    "head": F.normalize(model.head.weight.float(), dim=-1).cpu(),
+                    "checkpoint_step": state["step"]}, cache_path)
+        print(json.dumps({"cache": str(cache_path), "images": len(rows)}), flush=True)
+    if args.cache_only:
+        return
     device = "cuda"
     prob = torch.cat(probs).to(device)
     feature = torch.cat(features).to(device)
