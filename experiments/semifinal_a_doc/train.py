@@ -98,9 +98,11 @@ def main():
     count = torch.bincount(labels, minlength=cfg["classes"]).float()
     weights = ((1 - 0.999) / (1 - 0.999 ** count)).float()
     weights /= weights.mean()
-    history_class = torch.full_like(labels, -1)
-    history_step = torch.full_like(labels, -100000)
-    history_ok = torch.zeros_like(labels, dtype=torch.bool)
+    # Documented A route tracks repeat visits by identical image content.
+    history_size = int(canonical.max()) + 1 if cfg.get("history_by_canonical", False) else len(labels)
+    history_class = torch.full((history_size,), -1, device=device, dtype=torch.long)
+    history_step = torch.full((history_size,), -100000, device=device, dtype=torch.long)
+    history_ok = torch.zeros((history_size,), device=device, dtype=torch.bool)
     step = 0
     if args.resume:
         state = torch.load(run / "last.pt", map_location="cpu", weights_only=False)
@@ -196,7 +198,8 @@ def main():
                         top2 = prob.topk(2, -1).values
                         pred = prob.argmax(-1)
                         good = (top2[:, 0] >= 0.9) & ((top2[:, 0] - top2[:, 1]) >= 0.4)
-                        stable = good & history_ok[ids] & (history_class[ids] == pred) & ((step - history_step[ids]) <= cfg["soft_max_gap"]) & (history_step[ids] < step)
+                        history_ids = canonical[ids] if cfg.get("history_by_canonical", False) else ids
+                        stable = good & history_ok[history_ids] & (history_class[history_ids] == pred) & ((step - history_step[history_ids]) <= cfg["soft_max_gap"]) & (history_step[history_ids] < step)
                         if stable.any():
                             class_freq = torch.bincount(pred[stable], minlength=cfg["classes"]).clamp_min(1)
                             class_w = 1 / class_freq[pred[stable]].float()
@@ -204,7 +207,7 @@ def main():
                             soft_ce = -(prob[stable] * F.log_softmax(logits[stable].float(), -1)).sum(-1)
                             ramp = min(1, (step - cfg["soft_start"]) / cfg["soft_ramp"])
                             loss = loss + cfg["soft_weight"] * ramp * (soft_ce * class_w).sum() / len(y)
-                        history_class[ids], history_step[ids], history_ok[ids] = pred, step, good
+                        history_class[history_ids], history_step[history_ids], history_ok[history_ids] = pred, step, good
                     sp_terms = [((param - anchors[name]) ** 2).sum() for name, param in model.backbone.named_parameters() if name in anchors]
                     sp_count = sum(param.numel() for name, param in model.backbone.named_parameters() if name in anchors)
                     sp = torch.stack(sp_terms).sum() / sp_count
