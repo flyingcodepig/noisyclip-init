@@ -43,6 +43,14 @@ python -m noisyclip.cli.train --config configs/base.yaml --run-id b0-seed-202608
 python -m noisyclip.cli.evaluate --run-dir /runs/b0-seed-20260806
 ```
 
+## Experiment records
+
+Competition experiments live under `experiments/semifinal_a_doc/`. On
+`release/rematch-r0-baseline`, start with
+`experiments/semifinal_a_doc/baseline_r0/HANDOVER.md`: it lists every artifact the
+branch carries, the verified hashes, the r0 results, and the reproduction
+commands.
+
 Training is offline-only: the official `ViT-B-32.pt` must already exist under
 `$XDG_CACHE_HOME`. To resume a failed run, pass both its original run ID and an
 explicit committed checkpoint:
