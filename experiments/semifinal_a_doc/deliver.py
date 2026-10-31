@@ -66,10 +66,11 @@ def main():
     p.add_argument("--workers", type=int, default=8)
     p.add_argument("--graph-mode", choices=("e1", "joint"), default="e1")
     p.add_argument("--save-cache", help="Save label-free four-view outputs for readout sweeps")
+    p.add_argument("--save-view-cache", help="Save separate four-view probabilities for fixed-model weight tests")
     p.add_argument("--cache-only", action="store_true")
     args = p.parse_args()
-    if args.cache_only and not args.save_cache:
-        raise ValueError("--cache-only requires --save-cache")
+    if args.cache_only and not (args.save_cache or args.save_view_cache):
+        raise ValueError("--cache-only requires a cache output")
     if not torch.cuda.is_available(): raise RuntimeError("CUDA GPU required")
     state = torch.load(args.checkpoint, map_location="cpu", weights_only=False)
     cfg = state["config"]
@@ -79,7 +80,7 @@ def main():
     model.cuda().eval().requires_grad_(False)
     rows = inventory(args.test_root, train=False, expected=cfg.get("expected_test", 49857))
     loader = DataLoader(Query(rows, cfg["views"]), batch_size=args.batch, num_workers=args.workers, pin_memory=True)
-    probs, features, visuals = [], [], []
+    probs, features, visuals, view_probabilities = [], [], [], []
     weights = torch.tensor([v[3] for v in cfg["views"]], device="cuda")
     with torch.inference_mode(), torch.autocast("cuda", dtype=torch.bfloat16):
         for number, (images, _) in enumerate(loader):
@@ -93,7 +94,18 @@ def main():
             feature = F.normalize(torch.stack(view_features).mean(0), dim=-1)
             visual = F.normalize(torch.stack(view_visuals).mean(0), dim=-1)
             probs.append(prob.cpu()); features.append(feature.cpu()); visuals.append(visual.cpu())
+            if args.save_view_cache:
+                view_probabilities.append(torch.stack(view_probs, dim=1).cpu())
             if number % 50 == 0: print(f"inference {number * args.batch}/{len(rows)}", flush=True)
+    if args.save_view_cache:
+        cache_path = Path(args.save_view_cache)
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        torch.save({"names": [Path(path).name for path, _ in rows],
+                    "view_probabilities": torch.cat(view_probabilities),
+                    "feature": torch.cat(features), "visual": torch.cat(visuals),
+                    "head": F.normalize(model.head.weight.float(), dim=-1).cpu(),
+                    "checkpoint_step": state["step"]}, cache_path)
+        print(json.dumps({"view_cache": str(cache_path), "images": len(rows)}), flush=True)
     if args.save_cache:
         cache_path = Path(args.save_cache)
         cache_path.parent.mkdir(parents=True, exist_ok=True)
