@@ -12,10 +12,11 @@
 ## 1. 分支与提交身份
 
 - 仓库：<https://github.com/flyingcodepig/noisyclip-init>
-- 分支：`release/rematch-r0-baseline`，HEAD `7aa6fbf6022c00838c6f87138976e9630bd0ebae`，树 `d13a9bc8cbf12165a6bbb1f40b5cd7ec453896c4`
+- 分支：`release/rematch-r0-baseline`。r0 内容的树是 `d13a9bc8cbf12165a6bbb1f40b5cd7ec453896c4`（对应 `7aa6fbf`）；本交接文档是之后的提交，分支最新提交以 `git log --oneline` 为准，别把本文档的提交当成 r0 快照。
 - 提交：
   - `a48ad0a` — 复赛 r0 基线代码、配置、四视图等权预测、开发／保留／全体评分
   - `7aa6fbf` — r0 最终 EMA 权重经 Git LFS 入库
+  - `5b2332a` — 本交接文档与根 README 的实验记录入口（文档修订会再往后追加）
 - 权重以 LFS 指针形式在树里（134 字节）：
 
   ```text
@@ -106,7 +107,7 @@
 
 ## 6. 复现
 
-数据和标签不随分支提供。以下命令假设已按 `README_A100.md` 的性格准备目录（角色对调为复赛数据）：
+数据和标签不随分支提供。以下命令按 `README_A100.md` 的方式准备目录，只是把角色对调为复赛数据：
 
 ```bash
 export CLIP=weights/clip-vit-base-patch32          # fetch_weights.py 下载并核对
