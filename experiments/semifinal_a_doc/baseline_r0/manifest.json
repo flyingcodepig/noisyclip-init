@@ -1,0 +1,58 @@
+{
+  "cache_sha256": "65fec97cffa0fea09bd8fd40c54f4273836d5900682163175359397d83fcf5c9",
+  "config_sha256": "377a501aa73849bad14d3432eb87557ba43dd2a1777e9f6262616e509c572444",
+  "variants": {
+    "documented": {
+      "weights": [
+        0.23,
+        0.16,
+        0.21,
+        0.4
+      ],
+      "csv_sha256": "295e5ad81b58860c8be55fb851b70a8b8fb9f36e5720c8a25ccb1e6e11e06254",
+      "class_count_cv": 0.11288489401340485,
+      "classes_predicted": 750,
+      "class_count_min": 19,
+      "class_count_max": 72
+    },
+    "equal": {
+      "weights": [
+        0.25,
+        0.25,
+        0.25,
+        0.25
+      ],
+      "csv_sha256": "c4b95a8b5c37776ca29996cafebe9ee45fcc9f78eeb372fd9914e5c8eb2a96d2",
+      "class_count_cv": 0.11256220191717148,
+      "classes_predicted": 750,
+      "class_count_min": 23,
+      "class_count_max": 72
+    },
+    "center_focus": {
+      "weights": [
+        0.15,
+        0.15,
+        0.25,
+        0.45
+      ],
+      "csv_sha256": "9bc41220d03271b35f8117b07aed5629eb1d87c989b9be56ac727ae8477a9778",
+      "class_count_cv": 0.11161249130964279,
+      "classes_predicted": 750,
+      "class_count_min": 20,
+      "class_count_max": 72
+    },
+    "full_focus": {
+      "weights": [
+        0.4,
+        0.2,
+        0.2,
+        0.2
+      ],
+      "csv_sha256": "7d83713067ac6e20ebdbe4b38bb6eef970603f34db81295014ae8dc3e0a06792",
+      "class_count_cv": 0.11502080410718918,
+      "classes_predicted": 750,
+      "class_count_min": 19,
+      "class_count_max": 74
+    }
+  }
+}
