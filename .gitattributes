@@ -1,0 +1,5 @@
+semifinal/stride16-v4/weights/final_ema.pt filter=lfs diff=lfs merge=lfs -text
+semifinal/stride16-v4/artifacts/*.csv -text
+semifinal/stride16-v4/artifacts/*.txt -text
+semifinal/stride16-v4/artifacts/*.zip binary
+semifinal/stride16-v4/scripts/*.sh text eol=lf
