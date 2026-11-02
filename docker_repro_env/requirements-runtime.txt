@@ -1,0 +1,16 @@
+# PyTorch 2.6.0+cu124 and torchvision 0.21.0+cu124 are supplied by the
+# pinned pytorch/pytorch CUDA 12.4 runtime base image.
+numpy==2.1.2
+Pillow==11.0.0
+transformers==4.46.3
+huggingface-hub==0.36.2
+tokenizers==0.20.3
+safetensors==0.8.0
+filelock==3.13.1
+fsspec==2024.6.1
+packaging==26.3
+PyYAML==6.0.3
+regex==2026.7.19
+requests==2.34.2
+tqdm==4.70.0
+typing_extensions==4.16.0

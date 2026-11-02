@@ -1,0 +1,109 @@
+name: Build reproduction environment image
+
+on:
+  push:
+    branches:
+      - codex/docker-env-semifinal-20261102
+    paths:
+      - "docker_repro_env/**"
+      - ".github/workflows/build-repro-image.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  IMAGE_NAME: ghcr.io/flyingcodepig/noisyclip-repro-env
+  IMAGE_TAG: semifinal-cu124-20261102
+  ARCHIVE_NAME: aic-noisyclip-env_semifinal-cu124-20261102.tar.gz
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    steps:
+      - name: Check out the dedicated build branch
+        uses: actions/checkout@v4
+
+      - name: Free runner disk space
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/share/boost
+          docker system prune --all --force
+          df -h
+
+      - name: Build environment-only image
+        run: |
+          set -euo pipefail
+          docker build --pull \
+            --tag "${IMAGE_NAME}:${IMAGE_TAG}" \
+            docker_repro_env
+
+      - name: Verify package versions without network
+        run: |
+          set -euo pipefail
+          docker run --rm --network none "${IMAGE_NAME}:${IMAGE_TAG}" \
+            python -c "import torch,torchvision,transformers,numpy,PIL; assert torch.__version__ == '2.6.0+cu124'; assert torchvision.__version__ == '0.21.0+cu124'; assert transformers.__version__ == '4.46.3'; assert numpy.__version__ == '2.1.2'; assert PIL.__version__ == '11.0.0'; assert torch.version.cuda == '12.4'; print('offline import check passed')"
+
+      - name: Audit image for forbidden project material
+        run: |
+          set -euo pipefail
+          docker run --rm --network none "${IMAGE_NAME}:${IMAGE_TAG}" bash -euc '
+            test -z "$(find /workspace -mindepth 1 -print -quit)"
+            for name in final_ema.pt run_predict.sh pred_results.csv submission.zip; do
+              if find / -xdev -type f -name "$name" -print -quit 2>/dev/null | grep -q .; then
+                echo "Forbidden project file found: $name" >&2
+                exit 1
+              fi
+            done
+          '
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Push environment image to GHCR
+        run: |
+          set -euo pipefail
+          docker push "${IMAGE_NAME}:${IMAGE_TAG}"
+
+      - name: Export compressed image and metadata
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          docker image inspect "${IMAGE_NAME}:${IMAGE_TAG}" > dist/image-inspect.json
+          docker history --no-trunc "${IMAGE_NAME}:${IMAGE_TAG}" > dist/image-history.txt
+          docker image inspect --format='{{index .RepoDigests 0}}' \
+            "${IMAGE_NAME}:${IMAGE_TAG}" > dist/image-repo-digest.txt
+          docker save "${IMAGE_NAME}:${IMAGE_TAG}" | gzip -6 > "dist/${ARCHIVE_NAME}"
+          sha256sum "dist/${ARCHIVE_NAME}" > "dist/${ARCHIVE_NAME}.sha256"
+          split --bytes=1500M --numeric-suffixes=0 --suffix-length=2 \
+            "dist/${ARCHIVE_NAME}" "dist/${ARCHIVE_NAME}.part-"
+          rm "dist/${ARCHIVE_NAME}"
+          du -h dist/*
+          df -h
+
+      - name: Upload split image archive
+        uses: actions/upload-artifact@v4
+        continue-on-error: true
+        with:
+          name: aic-noisyclip-repro-image-semifinal-cu124-20261102
+          path: dist/
+          compression-level: 0
+          retention-days: 7
+
+      - name: Write build summary
+        run: |
+          {
+            echo "## Reproduction environment image"
+            echo
+            echo "- Image: \`${IMAGE_NAME}:${IMAGE_TAG}\`"
+            echo "- Release source: \`88c69c00ca3a4b4715061eda2db9824a1d69e64c\`"
+            echo "- Contains environment dependencies only."
+            echo "- Project code, model weights, data, caches and outputs were audited as absent."
+            echo "- GPU execution was not tested on the GitHub-hosted CPU runner."
+          } >> "$GITHUB_STEP_SUMMARY"
